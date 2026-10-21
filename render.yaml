@@ -64,5 +64,4 @@ databases:
     user: prepkit
     region: singapore
     plan: free
-    diskSizeGB: 1
     postgresMajorVersion: "16"
