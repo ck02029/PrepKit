@@ -1,0 +1,53 @@
+# Dependencies
+/node_modules/
+**/node_modules/
+/.pnpm-store/
+
+# Local environment files and secrets.
+.env
+.env.*
+!.env.example
+!**/.env.example
+
+# Build output and framework caches
+**/.next/
+**/out/
+**/dist/
+**/.test-dist/
+**/coverage/
+**/.turbo/
+**/.vercel/
+**/.netlify/
+**/.cache/
+*.tsbuildinfo
+*.eslintcache
+
+# Logs and temporary files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.pid
+*.pid.lock
+*.tmp
+*.temp
+
+# Local editor and operating-system files
+.idea/
+.history/
+.DS_Store
+._*
+Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+
+# Local design references are not used by the application.
+/frontend/public/refs/

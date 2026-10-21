@@ -1,0 +1,8 @@
+{
+  "name": "prepkit",
+  "private": true,
+  "workspaces": ["frontend", "backend"],
+  "scripts": {
+    "evaluate": "npm run evaluate --workspace backend --"
+  }
+}
