@@ -4,6 +4,7 @@ import { request as httpRequest } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { load } from "cheerio";
 import { config } from "./config.js";
+import { requestGeminiGrounded } from "./llm.js";
 
 const ipv4BlockedRanges: Array<[number, number]> = [
   [0x00000000, 8], [0x0a000000, 8], [0x64400000, 10], [0x7f000000, 8],
@@ -203,23 +204,16 @@ export async function crawlCompany(home: string, skip: boolean, fetcher: typeof 
 /** Find an official company homepage when the user supplied a company name but no URL.
  * Only accept URLs returned by Gemini's Google Search grounding; never trust an
  * ungrounded URL generated in the response text. */
-export async function discoverCompanyWebsite(company: string, apiKey = config.GEMINI_API_KEY, request: typeof fetch = fetch): Promise<string | null> {
+export async function discoverCompanyWebsite(company: string, apiKey?: string, request: typeof fetch = fetch): Promise<string | null> {
   const name = company.trim();
   if (!name) return null;
   try {
-    if (apiKey) {
-      const response = await request(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.LLM_MODEL)}:generateContent`, {
-        method: "POST",
-        headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: `Find the official public homepage for the company named ${JSON.stringify(name)}. Return only JSON: {"url":"https://..."}. Use the company's own primary website, not a careers portal, directory, social network, news article, or search page. If the company is ambiguous or no official homepage is found, return {"url":""}.` }] }],
-          tools: [{ google_search: {} }],
-          generationConfig: { responseMimeType: "application/json", temperature: 0.1 },
-        }),
-        signal: AbortSignal.timeout(20000),
-      });
-      if (response.ok) {
-        const body = await response.json() as any;
+    if (apiKey !== undefined || config.GEMINI_API_KEY || config.GEMINI_API_KEYS) {
+      const prompt = `Find the official public homepage for the company named ${JSON.stringify(name)}. Return only JSON: {"url":"https://..."}. Use the company's own primary website, not a careers portal, directory, social network, news article, or search page. If the company is ambiguous or no official homepage is found, return {"url":""}.`;
+      const body = apiKey !== undefined
+        ? await explicitGeminiSearch(apiKey, prompt, request)
+        : await requestGeminiGrounded(prompt);
+      if (body) {
         const candidate = body.candidates?.[0];
         const text = candidate?.content?.parts?.map((part: any) => typeof part.text === "string" ? part.text : "").join("") ?? "";
         const result = JSON.parse(text) as { url?: string };
@@ -233,6 +227,12 @@ export async function discoverCompanyWebsite(company: string, apiKey = config.GE
     // Search-result fallback below still works when the grounding provider is unavailable or over quota.
   }
   return discoverHomepageFromSearch(name, request);
+}
+
+async function explicitGeminiSearch(apiKey:string,prompt:string,request:typeof fetch){
+  const response=await request(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.LLM_MODEL)}:generateContent`,{method:"POST",headers:{"content-type":"application/json","x-goog-api-key":apiKey},body:JSON.stringify({contents:[{parts:[{text:prompt}]}],tools:[{google_search:{}}],generationConfig:{responseMimeType:"application/json",temperature:0.1,maxOutputTokens:config.LLM_MAX_OUTPUT_TOKENS}}),signal:AbortSignal.timeout(20000)});
+  if(!response.ok)return null;
+  return await response.json();
 }
 
 function verifiedGroundedHomepage(value: string, chunks: any[]): string | null {
@@ -369,17 +369,10 @@ async function searchDuckDuckGoInterviewReports(query:string):Promise<SearchHit[
 
 type SearchHit={title:string;url:string;text:string;date:string;points:number};
 async function searchGoogleGrounded(query:string):Promise<SearchHit[]>{
-  if(!config.GEMINI_API_KEY)return [];
+  if(!config.GEMINI_API_KEY&&!config.GEMINI_API_KEYS)return [];
   try{
-    const response=await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(config.LLM_MODEL)}:generateContent`,{
-      method:"POST",headers:{"content-type":"application/json","x-goog-api-key":config.GEMINI_API_KEY},
-      body:JSON.stringify({
-        contents:[{parts:[{text:`Search the public web for candidate-reported interview experiences relevant to this query: ${query}. Prefer first-hand interview reports and company-tagged interview question pages. Return only JSON: {"results":[{"url":"...","title":"...","snippet":"..."}]}. Include only pages actually found by Google Search and directly relevant to an interview, hiring round, coding question, or candidate experience. The snippet must summarize information supported by that exact page. Do not invent interview stages, dates, difficulty, or question wording. Use the exact source URL from your search results. If no relevant reports exist, return {"results":[]}.`}]}],
-        tools:[{google_search:{}}],generationConfig:{responseMimeType:"application/json",temperature:0.1},
-      }),signal:AbortSignal.timeout(20000),
-    });
-    if(!response.ok)return [];
-    const body=await response.json() as any;
+    const body=await requestGeminiGrounded(`Search the public web for candidate-reported interview experiences relevant to this query: ${query}. Prefer first-hand interview reports and company-tagged interview question pages. Return only JSON: {"results":[{"url":"...","title":"...","snippet":"..."}]}. Include only pages actually found by Google Search and directly relevant to an interview, hiring round, coding question, or candidate experience. The snippet must summarize information supported by that exact page. Do not invent interview stages, dates, difficulty, or question wording. Use the exact source URL from your search results. If no relevant reports exist, return {"results":[]}.`);
+    if(!body)return [];
     const candidate=body.candidates?.[0];
     const text=candidate?.content?.parts?.map((part:any)=>typeof part.text==="string"?part.text:"").join("")??"";
     const canonicalUrl=(value:string)=>{const url=new URL(value);url.hostname=url.hostname.toLowerCase().replace(/^www\./,"");url.hash="";for(const key of [...url.searchParams.keys()])if(/^(utm_|gclid$|fbclid$|ref$)/i.test(key))url.searchParams.delete(key);if(url.pathname.length>1)url.pathname=url.pathname.replace(/\/+$/,"");return url.href;};

@@ -12,9 +12,14 @@ const isProduction = process.env.NODE_ENV === "production";
 const configSchema = z.object({
   PORT: z.coerce.number().default(8000), DATABASE_URL: z.string().min(1),
   FRONTEND_ORIGIN: z.string().default("http://localhost:3000"), SESSION_SECRET: z.string().min(32),
-  GEMINI_API_KEY: z.string().optional(), LLM_MODEL: z.string().default("gemini-3.5-flash-lite"),
-  OPENAI_API_KEY: z.string().optional(), OPENAI_MODEL: z.string().default("gpt-4.1-mini"),
+  GEMINI_API_KEY: z.string().optional(), GEMINI_API_KEYS: z.string().optional(), LLM_MODEL: z.string().default("gemini-3.5-flash-lite"),
+  OPENAI_API_KEY: z.string().optional(), OPENAI_API_KEYS: z.string().optional(), OPENAI_MODEL: z.string().default("gpt-4.1-mini"),
   LLM_MIN_REQUEST_INTERVAL_MS: z.coerce.number().int().min(0).max(60000).default(5000),
+  LLM_DAILY_CALLS_PER_KEY: z.coerce.number().int().min(0).default(150),
+  LLM_MAX_OUTPUT_TOKENS: z.coerce.number().int().min(256).default(8192),
+  MAX_QUESTIONS_PER_CATEGORY: z.coerce.number().int().min(1).max(20).default(6),
+  MAX_KITS_PER_DAY: z.coerce.number().int().min(1).default(10),
+  REGENERATIONS_PER_HOUR: z.coerce.number().int().min(1).default(6),
   DB_POOL_MAX: z.coerce.number().int().min(1).max(50).default(10),
   MAX_DAYS: z.coerce.number().int().min(1).max(60).default(60), MAX_JD_CHARS: z.coerce.number().int().default(30000),
   FETCH_TIMEOUT_MS: z.coerce.number().default(8000), FETCH_MAX_BYTES: z.coerce.number().default(1500000), CRAWL_MAX_PAGES: z.coerce.number().default(12),
@@ -23,6 +28,9 @@ const configSchema = z.object({
 });
 
 export const config = configSchema.parse(process.env);
+const parseKeys = (single?: string, multiple?: string) => [...new Set([...(single ? [single] : []), ...(multiple ?? "").split(",")].map((key) => key.trim()).filter(Boolean))];
+export const geminiApiKeys = parseKeys(config.GEMINI_API_KEY, config.GEMINI_API_KEYS);
+export const openaiApiKeys = parseKeys(config.OPENAI_API_KEY, config.OPENAI_API_KEYS);
 
 if (isProduction) {
   const origins = config.FRONTEND_ORIGIN.split(",").map((origin) => origin.trim()).filter(Boolean);
@@ -30,5 +38,5 @@ if (isProduction) {
     throw new Error("Production FRONTEND_ORIGIN entries must use HTTPS.");
   }
   if (config.COOKIE_SECURE !== "true") throw new Error("COOKIE_SECURE=true is required in production.");
-  if (!config.GEMINI_API_KEY && !config.OPENAI_API_KEY) throw new Error("Configure GEMINI_API_KEY or OPENAI_API_KEY in production.");
+  if (!geminiApiKeys.length && !openaiApiKeys.length) throw new Error("Configure GEMINI_API_KEY(S) or OPENAI_API_KEY(S) in production.");
 }

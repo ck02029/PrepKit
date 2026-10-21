@@ -40,10 +40,11 @@ const config: Config = {
       },
       borderRadius: {
         lg: "10px",
-        xl: "12px",
+        xl: "14px",
+        "2xl": "18px",
       },
       boxShadow: {
-        card: "0 1px 2px rgba(20, 24, 31, 0.06), 0 4px 16px rgba(20, 24, 31, 0.06)",
+        card: "0 1px 2px rgba(20, 24, 31, 0.04), 0 6px 20px rgba(20, 24, 31, 0.05)",
         overlay: "0 12px 40px rgba(20, 24, 31, 0.18)",
       },
     },

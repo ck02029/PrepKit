@@ -29,12 +29,26 @@ services:
         value: lax
       - key: GEMINI_API_KEY
         sync: false
+      - key: GEMINI_API_KEYS
+        sync: false
       - key: OPENAI_API_KEY
+        sync: false
+      - key: OPENAI_API_KEYS
         sync: false
       - key: LLM_MODEL
         value: gemini-3.5-flash-lite
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
+      - key: LLM_DAILY_CALLS_PER_KEY
+        value: "150"
+      - key: LLM_MAX_OUTPUT_TOKENS
+        value: "8192"
+      - key: MAX_QUESTIONS_PER_CATEGORY
+        value: "6"
+      - key: MAX_KITS_PER_DAY
+        value: "10"
+      - key: REGENERATIONS_PER_HOUR
+        value: "6"
       - key: DB_POOL_MAX
         value: "5"
 

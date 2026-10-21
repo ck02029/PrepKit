@@ -78,7 +78,7 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(
           onChange={handleChange}
           aria-describedby={shouldShowCount ? counterId : undefined}
           className={cn(
-            "min-h-[6rem] w-full resize-y rounded-lg border border-border bg-white px-3 py-2 text-sm text-ink placeholder:text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-accent disabled:cursor-not-allowed disabled:opacity-50",
+            "min-h-[6rem] w-full resize-y rounded-xl border border-border bg-white px-3 py-2 text-sm text-ink shadow-sm transition-shadow placeholder:text-muted focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-0 focus-visible:outline-accent focus-visible:shadow-md disabled:cursor-not-allowed disabled:opacity-50",
             className,
           )}
           {...props}

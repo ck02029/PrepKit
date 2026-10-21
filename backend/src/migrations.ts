@@ -32,4 +32,9 @@ export const migrations = [{ version: 1, name: "initial_schema", sql: `
     CREATE INDEX IF NOT EXISTS jobs_claim_idx ON generation_jobs(status, lease_until, created_at);
     CREATE INDEX IF NOT EXISTS kits_owner_idx ON kits(user_id, updated_at DESC);
     CREATE INDEX IF NOT EXISTS sessions_expiry_idx ON sessions(expires_at);
+  ` }, { version: 2, name: "provider_key_state_and_research_cache", sql: `
+    CREATE TABLE IF NOT EXISTS ai_key_state(key_id text PRIMARY KEY, provider text NOT NULL, blocked_until timestamptz, reason text NOT NULL DEFAULT 'quota', updated_at timestamptz NOT NULL DEFAULT now());
+    CREATE TABLE IF NOT EXISTS ai_key_usage(key_id text NOT NULL, day text NOT NULL, calls int NOT NULL DEFAULT 0, PRIMARY KEY(key_id, day));
+    CREATE TABLE IF NOT EXISTS research_cache(cache_key text PRIMARY KEY, result jsonb NOT NULL, expires_at timestamptz NOT NULL);
+    CREATE INDEX IF NOT EXISTS research_cache_expiry_idx ON research_cache(expires_at);
   ` }] as const;

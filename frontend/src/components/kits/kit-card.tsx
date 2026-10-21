@@ -17,7 +17,7 @@ function formatDate(iso: string | null): string {
 
 export function KitCard({ kit }: KitCardProps) {
   return (
-    <article className="rounded-xl border border-border bg-white p-4 shadow-sm transition-shadow hover:shadow-md md:p-5">
+    <article className="rounded-2xl border border-border bg-white p-4 shadow-card transition-all duration-200 hover:-translate-y-0.5 hover:border-accent/40 hover:shadow-md md:p-5">
       <div className="flex flex-col gap-3">
         <div className="flex flex-wrap items-start justify-between gap-2">
           <h2 className="text-base font-semibold text-ink md:text-lg">
