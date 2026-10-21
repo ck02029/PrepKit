@@ -25,7 +25,7 @@ COPY backend/package.json backend/package.json
 COPY frontend/package.json frontend/package.json
 RUN npm ci --omit=dev --workspace=frontend --include-workspace-root=false && npm cache clean --force
 COPY --from=build --chown=node:node /app/frontend/.next ./frontend/.next
-COPY --from=build --chown=node:node /app/frontend/public ./frontend/public
+RUN mkdir -p frontend/public
 COPY --from=build --chown=node:node /app/frontend/next.config.mjs ./frontend/next.config.mjs
 USER node
 EXPOSE 3000
