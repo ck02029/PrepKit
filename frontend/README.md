@@ -50,7 +50,7 @@ Questions, flashcards, and the company brief expose provenance/origin metadata. 
 
 ## API and configuration
 
-`src/lib/backend-api.ts` contains typed calls to the backend, and `src/lib/api.ts` provides the UI-facing API helpers. In the default setup, requests use relative `/api` paths and are proxied by Next.js. In Docker, the frontend container reaches the API through `BACKEND_INTERNAL_URL=http://backend:8000`. Production same-origin proxying requires an internal API URL at build time; configure it in the frontend Docker build environment. `NEXT_PUBLIC_API_BASE_URL` can point to a separately hosted API, but the API must allow the frontend origin in `FRONTEND_ORIGIN`.
+`src/lib/backend-api.ts` contains typed calls to the backend, and `src/lib/api.ts` provides the UI-facing API helpers. The browser uses relative `/api` paths, which Next.js rewrites to the backend. In local development the destination defaults to `http://localhost:8000`; in Compose it is `http://backend:8000`. For the Render free-tier Blueprint, configure `BACKEND_INTERNAL_URL` as the API service's public HTTPS URL. Render Free services cannot use private networking, so the frontend server makes that proxy request over HTTPS. The destination is provided at build time through the frontend service configuration. `NEXT_PUBLIC_API_BASE_URL` can point browser requests directly at a separately hosted API, but then the API must allow the frontend origin in `FRONTEND_ORIGIN`.
 
 The backend owns cookie/session authentication. The frontend does not receive or store provider keys. See the [root README configuration table](../README.md#configuration) and [backend README](../backend/README.md) for service configuration and API behavior.
 

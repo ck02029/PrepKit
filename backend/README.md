@@ -1,6 +1,6 @@
 # PrepKit backend
 
-The backend is a TypeScript service split into an Express API and a separate durable job worker. PostgreSQL stores user accounts, sessions, versioned kit documents, normalized kit entities, research evidence, generation jobs/checkpoints, and practice history. Both processes use the shared kit contract in `packages/kit-schema`.
+The backend is a TypeScript service with an Express API and a durable job worker loop. Local Compose and production Compose run the API and worker as separate processes; the Render free-tier demo runs both in one API web process. PostgreSQL stores user accounts, sessions, versioned kit documents, normalized kit entities, research evidence, generation jobs/checkpoints, and practice history. Both runtime modes use the shared kit contract in `packages/kit-schema`.
 
 ## Local setup and commands
 
@@ -29,23 +29,31 @@ Integration tests use a separate PostgreSQL database configured with `TEST_DATAB
 
 ```mermaid
 flowchart LR
-  Browser[Next.js frontend] -->|same-origin /api proxy| API[Express API]
+  Browser[Browser] --> Frontend[Next.js frontend]
+  Frontend -->|same-origin /api rewrite| API[Express API]
   API --> DB[(PostgreSQL)]
   API -->|enqueue durable job| Jobs[generation_jobs]
-  Worker[Background worker] -->|claim and checkpoint| Jobs
-  Worker --> Research[Research and crawling]
+  subgraph Runtime[Alternative queue runtimes]
+    Worker[Standalone worker<br/>Compose or paid hosting]
+    CoHosted[In-process worker loop<br/>Render Free API service]
+  end
+  Worker -->|claim and checkpoint| Jobs
+  CoHosted -->|claim and checkpoint| Jobs
+  Worker --> Runner[Job processing pipeline]
+  CoHosted --> Runner
+  Runner --> Research[Research and crawling]
   Research --> Web[Company site and interview sources]
   Research --> Evidence[evidence_sources and evidence_chunks]
-  Worker --> LLM[Provider adapter and output validation]
+  Runner --> LLM[Provider adapter and output validation]
   LLM --> Gemini[Gemini]
   LLM --> OpenAI[OpenAI]
-  Worker --> Pipeline[Section generation and coverage]
+  Runner --> Pipeline[Section generation and coverage]
   Pipeline --> Scheduler[Deterministic scheduler]
   Pipeline --> DB
   API -->|read/edit/practice| DB
 ```
 
-The API validates requests, authenticates and scopes operations to the current user, creates generation records, returns progress, persists edits, and manages practice/schedule state. It does not perform long model calls in the request path. The worker leases durable jobs, renews its heartbeat, resumes from completed checkpoints, and records stage outcomes. A worker restart therefore does not discard already completed sections.
+The API validates requests, authenticates and scopes operations to the current user, creates generation records, returns progress, persists edits, and manages practice/schedule state. It does not perform long model calls in the request path. The worker loop leases durable jobs, renews its heartbeat, resumes from completed checkpoints, and records stage outcomes. A process restart therefore does not discard already completed sections. `worker-runtime.ts` contains the reusable queue loop. Local Compose and paid production configurations run it as a separate worker process. The Render Free Blueprint starts that same loop alongside the API in one web process; both deployment modes use the same PostgreSQL-backed queue.
 
 ### Module map
 
@@ -110,6 +118,6 @@ The batch command requires PostgreSQL and an available configured provider. It a
 
 The Compose definitions are in the repository root. `docker-compose.backend.yml` runs PostgreSQL, API, and worker; `docker-compose.frontend.yml` runs the frontend against the host API; the default `docker-compose.yml` runs the complete local stack. `docker-compose.production.yml` keeps PostgreSQL and API private and places Caddy in front of the frontend for HTTPS. Configure `.env.production` with the domain, database credentials, session secret, and model credentials, then use the production Compose file with `--env-file .env.production`. Back up PostgreSQL outside its Docker volume.
 
-The Render Blueprint is in `render.yaml`. It provisions paid plans for the frontend, private API, worker, and PostgreSQL. Render's free tier does not include private services or background workers, and its free PostgreSQL database expires after 30 days. Review [Render's free plan limits](https://render.com/docs/free) and [current pricing](https://render.com/pricing) before deploying. To launch the Blueprint, push this repository to GitHub, connect that repository in Render using **New > Blueprint**, review the proposed resources and costs, supply the provider key when prompted for both API and worker services, then deploy. The frontend address follows the service name in `render.yaml`; if that name changes, update `FRONTEND_ORIGIN` on the API and worker too.
+The Render Blueprint in `render.yaml` uses free web services for the frontend and API plus a free PostgreSQL database. The API web service also runs the queue loop because Render Free does not include private services or background workers. The frontend rewrites `/api` requests to the API's public HTTPS URL; this is a server-side proxy, so the browser continues to use same-origin paths. Free web services can spin down and share monthly instance-hour limits; free PostgreSQL is limited to 1 GB and expires after 30 days. Treat this as a temporary demo, not durable production hosting. See [Render's current free-tier limits](https://render.com/docs/free). To launch, push this repository to GitHub, connect it in Render using **New > Blueprint**, enter a provider key when prompted, and deploy. The frontend address follows the service name in `render.yaml`; if either service name changes, update `FRONTEND_ORIGIN` or `BACKEND_INTERNAL_URL` to match.
 
 See the [root README](../README.md) for environment setup, service commands, and test commands.

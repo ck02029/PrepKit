@@ -1,11 +1,15 @@
+# Free-tier demo deployment. The API and durable worker share one web service
+# because Render's free plan does not include private services or workers.
 services:
-  - type: pserv
+  - type: web
     name: prepkit-api
     runtime: docker
     region: singapore
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./backend/Dockerfile
     dockerContext: .
+    dockerCommand: npm run start:api-with-worker --workspace backend
+    healthCheckPath: /api/health
     envVars:
       - key: NODE_ENV
         value: production
@@ -32,50 +36,13 @@ services:
       - key: OPENAI_MODEL
         value: gpt-4.1-mini
       - key: DB_POOL_MAX
-        value: "10"
-
-  - type: worker
-    name: prepkit-worker
-    runtime: docker
-    region: singapore
-    plan: 0.5c-512mb
-    dockerfilePath: ./backend/Dockerfile
-    dockerContext: .
-    dockerCommand: npm run start:worker --workspace backend
-    envVars:
-      - key: NODE_ENV
-        value: production
-      - key: FRONTEND_ORIGIN
-        value: https://prepkit-frontend.onrender.com
-      - key: DATABASE_URL
-        fromDatabase:
-          name: prepkit-db
-          property: connectionString
-      - key: SESSION_SECRET
-        fromService:
-          name: prepkit-api
-          type: pserv
-          envVarKey: SESSION_SECRET
-      - key: COOKIE_SECURE
-        value: "true"
-      - key: COOKIE_SAME_SITE
-        value: lax
-      - key: GEMINI_API_KEY
-        sync: false
-      - key: OPENAI_API_KEY
-        sync: false
-      - key: LLM_MODEL
-        value: gemini-3.5-flash-lite
-      - key: OPENAI_MODEL
-        value: gpt-4.1-mini
-      - key: DB_POOL_MAX
-        value: "10"
+        value: "5"
 
   - type: web
     name: prepkit-frontend
     runtime: docker
     region: singapore
-    plan: 0.5c-512mb
+    plan: free
     dockerfilePath: ./frontend/Dockerfile
     dockerContext: .
     healthCheckPath: /login
@@ -86,17 +53,16 @@ services:
         value: "10000"
       - key: NEXT_PUBLIC_API_BASE_URL
         value: ""
+      # Free web services cannot receive private-network requests, so the
+      # Next.js API proxy uses the public HTTPS URL of the API web service.
       - key: BACKEND_INTERNAL_URL
-        fromService:
-          name: prepkit-api
-          type: pserv
-          property: hostport
+        value: https://prepkit-api.onrender.com
 
 databases:
   - name: prepkit-db
     databaseName: prepkit
     user: prepkit
     region: singapore
-    plan: 0.5c-1g
-    diskSizeGB: 5
+    plan: free
+    diskSizeGB: 1
     postgresMajorVersion: "16"

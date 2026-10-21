@@ -1,6 +1,6 @@
 # PrepKit
 
-PrepKit turns a job description into a researched interview preparation kit. It combines a Next.js and Tailwind interface, a Node.js and Express API, PostgreSQL, and a separate background worker. It supports account-based kits, batch creation, section editing and regeneration, practice sessions, flashcards, and a day-by-day schedule.
+PrepKit turns a job description into a researched interview preparation kit. It combines a Next.js and Tailwind interface, a Node.js and Express API, PostgreSQL, and a durable background job queue. In local Compose and production Compose, the API and worker run as separate services; the Render free-tier demo runs the API and worker loop together in one web service. It supports account-based kits, batch creation, section editing and regeneration, practice sessions, flashcards, and a day-by-day schedule.
 
 This repository uses PostgreSQL rather than the assessment's preferred MongoDB. PostgreSQL transactions and foreign keys fit ownership checks, durable job processing, and practice history; JSONB stores the versioned kit document while indexed relational tables support querying and progress. TypeScript is used across the stack, and the shared kit contract is in `packages/kit-schema`.
 
@@ -66,6 +66,7 @@ For component-level setup and implementation details, see [frontend/README.md](f
 - **Editing and regeneration:** each kit has a monotonically increasing version for optimistic concurrency. Items carry generated, edited, pinned, or user origin. Regeneration replaces the selected generated content while preserving manual items and unrelated edits; replaced generated items are archived. Checkpoints let a worker resume completed generation sections after interruption.
 - **Practice:** flashcard ratings use a simple confidence-weighted due interval (15 minutes, then 1, 2, 4, or 7 days for ratings 1 through 5). Answers, reveals, ratings, session status, and schedule completion persist per user and kit.
 - **Rate limits and retries:** provider requests are serialized and spaced per provider across workers, responses are cached for 30 days, malformed output can be repaired, transient provider errors are retried, and quota-limited jobs are deferred until the reported cooldown instead of being marked complete.
+- **Render free deployment:** `render.yaml` uses two free web services and a free PostgreSQL database. On Render only, the backend web service runs both the API and queue worker in one process; the regular Compose deployment still runs them separately. The frontend proxies to the API's public HTTPS URL because free services cannot receive private-network requests.
 
 See [backend/README.md](backend/README.md) for the service diagram, module map, data model, API responsibilities, security boundaries, and batch contract. See [frontend/README.md](frontend/README.md) for routes, components, state handling, and UI architecture.
 
@@ -80,7 +81,7 @@ See [backend/README.md](backend/README.md) for the service diagram, module map, 
 | `LLM_MODEL`, `OPENAI_MODEL` | `backend/.env` / API and worker | Provider model names. |
 | `LLM_MIN_REQUEST_INTERVAL_MS` | `backend/.env` / API and worker | Minimum interval between calls to one provider (default 5000 ms). |
 | `FRONTEND_ORIGIN` | `backend/.env` / API | Comma-separated browser origins allowed by the API. |
-| `BACKEND_INTERNAL_URL` | frontend process | Internal API proxy destination; set for Docker or production topology as needed. |
+| `BACKEND_INTERNAL_URL` | frontend build/runtime | Next.js `/api` rewrite destination: `http://backend:8000` in Compose and the API's public HTTPS URL on Render Free. |
 | `NEXT_PUBLIC_API_BASE_URL` | frontend build/runtime | Optional public API override; leave blank for same-origin `/api` proxying. |
 | `MAX_DAYS`, `MAX_JD_CHARS`, `FETCH_TIMEOUT_MS`, `FETCH_MAX_BYTES`, `CRAWL_MAX_PAGES` | `backend/.env` | Input, research, and resource limits. |
 
@@ -116,6 +117,6 @@ Never point integration tests at a development or production database. LLM evalu
 - `docker-compose.production.yml` runs the application behind Caddy, with private PostgreSQL/API services and automatic HTTPS for a correctly configured public domain.
 - `docker-compose.backend.yml` starts PostgreSQL, API, and worker.
 - `docker-compose.frontend.yml` starts a frontend container pointing at a host API.
-- `render.yaml` is a Render Blueprint for frontend, private API, worker, and PostgreSQL. It selects paid compute/database plans. Render does not offer free instances for private services or workers, and its free PostgreSQL expires after 30 days; review the current [plan details](https://render.com/docs/free) and [pricing](https://render.com/pricing) before deploying.
+- `render.yaml` is a Render Blueprint for a free-tier demo deployment. The free web services can spin down after inactivity, use monthly included instance hours, and the free PostgreSQL database expires after 30 days. This is suitable for a temporary assessment demo, not durable production use. Review Render's current [free-tier limits](https://render.com/docs/free) before deploying.
 
 See [frontend/README.md](frontend/README.md), [backend/README.md](backend/README.md), and [backend/evals/README.md](backend/evals/README.md).

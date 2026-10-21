@@ -8,6 +8,7 @@
     "dev:worker": "tsx watch src/worker.ts",
     "start:api": "node dist/backend/src/server.js",
     "start:worker": "node dist/backend/src/worker.js",
+    "start:api-with-worker": "node dist/backend/src/server-with-worker.js",
     "build": "tsc -p tsconfig.json",
     "test": "npm run test:unit && npm run test:integration",
     "test:unit": "tsc -p tsconfig.test.json && node --import ./.test-dist/backend/src/test-setup.js --test ./.test-dist/backend/src/*.test.js",
