@@ -6,7 +6,7 @@ import type { GenerationStatus } from "@/lib/schema";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
-import { generationProgressPercent, generationViewState } from "@/lib/generation-view-state";
+import { generationProgressPercent, generationViewState, nonDecreasingProgress } from "@/lib/generation-view-state";
 
 const stateIcon = { pending: "○", running: "◌", done: "✓", warning: "!", failed: "×" };
 const generationOrder = ["research", "requirements", "overview", "topics", "rounds", "questions", "flashcards", "schedule"];
@@ -49,7 +49,15 @@ function displayedStepDetail(name: string, detail: string) {
 
 export function ProgressView({ kitId, status }: { kitId: string; status: GenerationStatus }) {
   const queryClient = useQueryClient();
-  const percent = generationProgressPercent(status.steps);
+  const currentPercent = generationProgressPercent(status.steps);
+  const [progressPeak, setProgressPeak] = useState({ kitId, percent: currentPercent });
+  const previousPeak = progressPeak.kitId === kitId ? progressPeak.percent : 0;
+  const percent = nonDecreasingProgress(previousPeak, currentPercent);
+  useEffect(() => {
+    setProgressPeak((previous) => previous.kitId === kitId
+      ? { kitId, percent: nonDecreasingProgress(previous.percent, currentPercent) }
+      : { kitId, percent: currentPercent });
+  }, [kitId, currentPercent]);
   const visibleSources = status.sources.filter((source) => !(source.state === "skipped" && isSuppressed403(source.reason)));
   const skipped = visibleSources.some((source) => source.state === "skipped");
   const viewState = generationViewState(status, false);

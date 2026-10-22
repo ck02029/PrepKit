@@ -8,6 +8,7 @@ import { useAutosave } from "@/hooks/use-autosave";
 import { loadKitData } from "@/lib/api";
 import { queryKeys } from "@/lib/query-keys";
 import { regenerateKitSection } from "@/lib/api";
+import { topicHeading } from "@/lib/topic-heading";
 import { useQuery } from "@tanstack/react-query";
 import type { KitData } from "@/lib/schema";
 import { useEffect, useState } from "react";
@@ -42,19 +43,19 @@ function topicDescription(value: string) {
   return value.replace(/^Study for this reported or explicitly JD-stated interview format\.\s*/i, "");
 }
 
-function matchingReportRounds(label: string, research: KitData["interview_research"]) {
-  if (/resume|project|practice/i.test(label)) return [];
-  const value = label.toLowerCase();
-  const patterns = /data structures|algorithm|\bdsa\b|coding|assessment|problem.solving/i.test(value)
-    ? /online assessment|\boa\b|dsa|coding/i
-    : /system design|architecture/i.test(value)
-      ? /system design|architecture/i
-      : /object.oriented|low.level design|\blld\b|\boop\b/i.test(value)
-        ? /low.level design|object.oriented|\blld\b|\boop\b/i
-        : /behavior|behaviour|collaboration/i.test(value)
-          ? /behavior|behaviour/i
-          : null;
-  return patterns ? research.rounds.filter((round) => patterns.test(round.name)) : [];
+function roundOnlyExpectations(round: KitData["interview_research"]["rounds"][number], topics: KitData["interview_research"]["topics"]) {
+  const topicDetails = topics.flatMap((topic) => [topic.label, ...(topic.subtopics ?? [])]).map(normalizeStudyText).filter(Boolean);
+  const seen = new Set<string>();
+  return (round.expectations ?? []).filter((expectation) => {
+    const normalized = normalizeStudyText(expectation);
+    if (!normalized || seen.has(normalized)) return false;
+    seen.add(normalized);
+    return !topicDetails.some((detail) => normalized === detail || (Math.min(normalized.length, detail.length) >= 28 && (normalized.includes(detail) || detail.includes(normalized))));
+  });
+}
+
+function normalizeStudyText(value: string) {
+  return value.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function safeExternalUrl(value?: string | null): string | null {
@@ -71,6 +72,8 @@ export function BuilderContent({ kitId }: { kitId: string }) {
   const [interviewResearchRefreshError, setInterviewResearchRefreshError] = useState("");
   const [refreshingTopics, setRefreshingTopics] = useState(false);
   const [topicRefreshError, setTopicRefreshError] = useState("");
+  const [regeneratingQuestions, setRegeneratingQuestions] = useState(false);
+  const [questionRegenerationError, setQuestionRegenerationError] = useState("");
   const router = useRouter();
   const { state: saveState, save, retry, setVersion } = useAutosave(kitId);
   const kitDataQuery = useQuery({ queryKey: queryKeys.kitData(kitId), queryFn: () => loadKitData(kitId) });
@@ -125,10 +128,22 @@ export function BuilderContent({ kitId }: { kitId: string }) {
       setTopicRefreshError(error instanceof Error ? error.message : "Study topics could not be regenerated.");
     }
   }
+  async function regenerateQuestions() {
+    setRegeneratingQuestions(true);
+    setQuestionRegenerationError("");
+    try {
+      await regenerateKitSection(kitId, "questions");
+      router.push(`/kits/${kitId}?generating=1`);
+    } catch (error) {
+      setRegeneratingQuestions(false);
+      setQuestionRegenerationError(error instanceof Error ? error.message : "Questions could not be regenerated.");
+    }
+  }
   return <div className="builder-content mx-auto flex w-full max-w-6xl flex-col gap-6">
     <header className="flex flex-wrap items-start justify-between gap-4 border-b border-border pb-5">
       <div><p className="font-mono text-xs uppercase tracking-[0.12em] text-muted">Interview preparation kit · {formatCompany(data.source.company)} · {data.schedule.days_available} days</p><h1 className="mt-1 text-2xl font-semibold">{formatRole(data.role.title)}</h1><p className="mt-2 max-w-2xl text-sm text-muted">Start with the overview, then use the topic map and rounds to guide practice.</p><div className="mt-2 flex flex-wrap items-center gap-2"><span className="rounded bg-accent-tint px-2.5 py-1 text-xs font-medium text-accent" title="Job description requirements are tracked separately from interview round research.">{coverageCount} of {mustCount} JD must-haves linked</span><span className="text-xs text-muted" role="status" aria-live="polite">{saveState === "saving" ? "Saving…" : saveState === "error" ? "Not saved, retry" : saveState === "conflict" ? "This kit changed somewhere else" : "Saved just now"}</span>{saveState === "error" ? <button className="text-xs text-accent underline" onClick={() => void retry()}>Retry</button> : null}</div></div>
-      <LinkButton href={`/kits/${kitId}/practice`} variant="primary">Start practice</LinkButton>
+      <div className="flex flex-wrap gap-2"><LinkButton href={`/kits/${kitId}/practice`} variant="primary">Start practice</LinkButton><Button variant="secondary" disabled={regeneratingQuestions} onClick={() => void regenerateQuestions()}>{regeneratingQuestions ? "Queueing regeneration…" : "Regenerate questions"}</Button></div>
+      {questionRegenerationError ? <p className="w-full text-sm text-red-700" role="alert">{questionRegenerationError}</p> : null}
     </header>
     <nav aria-label="Kit sections" className="sticky top-0 z-10 -mx-4 flex justify-start gap-1 overflow-x-auto border-b border-border bg-page px-4 py-2 md:mx-0 md:justify-end md:rounded md:px-2"><a className="whitespace-nowrap px-3 py-2 text-sm" href="#overview">Overview</a><a className="whitespace-nowrap px-3 py-2 text-sm" href="#topics">Topics</a><a className="whitespace-nowrap px-3 py-2 text-sm" href="#rounds">Rounds</a><a className="whitespace-nowrap px-3 py-2 text-sm" href="#schedule">Schedule</a></nav>
     <section id="overview" className="scroll-mt-20 border-b border-border pb-6">
@@ -137,7 +152,7 @@ export function BuilderContent({ kitId }: { kitId: string }) {
         <div className="rounded border border-border bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Target role</p>
           <p className="mt-3 text-sm leading-7">{overviewLines.join(" ")}</p>
-          <div className="mt-4 border-t border-border pt-4"><h3 className="text-sm font-semibold">What this role asks for</h3><p className="mt-1 text-xs text-muted">Requirements extracted from the job description; these guide role matching and practice, not interview-round predictions.</p>{data.role.requirements.length ? <ul className="mt-3 space-y-2">{data.role.requirements.map((requirement) => <li key={requirement.id} className="text-sm"><span className={`mr-2 rounded px-1.5 py-0.5 text-[11px] ${requirement.priority === "must" ? "bg-[#fce9e6] text-[#8a1f14]" : "bg-nice-bg text-nice-text"}`}>{requirement.priority === "must" ? "Required" : "Preferred"}</span>{requirement.text}{requirement.evidence_quote ? <p className="mt-1 text-xs text-muted">JD: “{requirement.evidence_quote}”</p> : null}</li>)}</ul> : <p className="mt-3 text-sm text-muted">No explicit requirements were extracted. Add the job description to tailor this kit.</p>}</div>
+          <div className="mt-4 border-t border-border pt-4"><h3 className="text-sm font-semibold">Requirements</h3><p className="mt-1 text-xs text-muted">From the job description. These guide practice, not interview-round predictions.</p>{data.role.requirements.length ? <ul className="mt-3 space-y-2">{data.role.requirements.map((requirement) => <li key={requirement.id} className="text-sm"><span className={`mr-2 rounded px-1.5 py-0.5 text-[11px] ${requirement.priority === "must" ? "bg-[#fce9e6] text-[#8a1f14]" : "bg-nice-bg text-nice-text"}`}>{requirement.priority === "must" ? "Required" : "Preferred"}</span>{requirement.text}{requirement.evidence_quote ? <p className="mt-1 text-xs text-muted">JD: “{requirement.evidence_quote}”</p> : null}</li>)}</ul> : <p className="mt-3 text-sm text-muted">No explicit requirements were extracted. Add the job description to tailor this kit.</p>}</div>
         </div>
         <div className="rounded border border-border bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">About {formatCompany(data.source.company)}</p>
@@ -151,16 +166,12 @@ export function BuilderContent({ kitId }: { kitId: string }) {
     <section id="topics" aria-labelledby="topic-overview-heading" className="scroll-mt-20 border-b border-border pb-6">
       <div className="flex flex-wrap items-center justify-between gap-3"><h2 id="topic-overview-heading" className="text-xl font-semibold">Topics</h2><Button variant="secondary" disabled={refreshingTopics} onClick={() => void refreshStudyTopics()}>{refreshingTopics ? "Building role-based study plan…" : "Refresh study topics and schedule"}</Button></div>
       {topicRefreshError ? <p className="mt-2 text-sm text-red-700" role="alert">{topicRefreshError}</p> : null}
-      <p className="mt-1 text-sm text-muted">Topics are ordered by role-based study priority. A topic may combine evidence from related formats; the rounds section lists each reported format separately. Candidate reports do not provide reliable frequency counts.</p>
+      <p className="mt-1 text-sm text-muted">Study topics are ordered by role priority. Interview formats and their sources are listed under Rounds, so preparation content stays here without repeating it.</p>
       {allTopics.length ? <div className="mt-5">
-        <h3 className="font-semibold">All topics</h3>
+        <h3 className="font-semibold">Topics</h3>
         <ul className="mt-2 divide-y divide-border border-y border-border">{allTopics.map((topic) => {
-          const priorityRank = allTopics.findIndex((item) => item.id === topic.id) + 1; const matchedRounds = matchingReportRounds(topic.label, research);
-          const roleBaselineOnly = /resume|project|practice|core computer science|object-oriented and low-level design/i.test(topic.label);
-          const topicSources = roleBaselineOnly ? [] : uniqueSources(matchedRounds.length ? matchedRounds.flatMap((round) => round.sources) : topic.sources);
-          const topicConfidence = roleBaselineOnly ? null : matchedRounds.length ? matchedRounds.map((round) => round.confidence).sort((a, b) => ({high:0,medium:1,low:2}[a ?? "low"] - {high:0,medium:1,low:2}[b ?? "low"]))[0] : topic.confidence;
-          const questionIds = data.questions.filter((question) => question.requirement_ids.some((id) => topic.requirement_ids.includes(id))).map((question) => question.id);
-          return <li key={topic.id} className="flex flex-wrap items-start justify-between gap-3 py-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h4 className="font-medium">{topic.label}</h4><span className="rounded bg-page px-2 py-0.5 text-xs text-muted">{`Priority ${priorityRank}`}</span></div><p className="mt-1 text-sm text-muted">{topicDescription(topic.description)}</p>{topic.subtopics?.length ? <ul className="mt-2 flex flex-wrap gap-2">{topic.subtopics.map((subtopic) => <li key={subtopic} className="rounded bg-accent-tint px-2 py-1 text-xs text-accent">{subtopic}</li>)}</ul> : null}<p className="mt-1 text-xs text-muted">{topicSources.length} sources · {topicConfidence ? `${topicConfidence} confidence` : "confidence unavailable"}</p>{topicSources.length ? <ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">{topicSources.map((source) => <li key={source.url}><a className="text-accent underline" href={source.url} target="_blank" rel="noreferrer">{sourceLabel(source)}</a></li>)}</ul> : null}</div>{questionIds.length ? <LinkButton href={`/kits/${kitId}/practice?questions=${questionIds.join(",")}`} variant="ghost" className="min-h-9 px-0">Practise related questions</LinkButton> : null}</li>;
+          const priorityRank = allTopics.findIndex((item) => item.id === topic.id) + 1;          const questionIds = data.questions.filter((question) => question.topic_ids?.includes(topic.id) || question.requirement_ids.some((id) => topic.requirement_ids.includes(id))).map((question) => question.id);
+          return <li key={topic.id} className="flex flex-wrap items-start justify-between gap-3 py-3"><div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><h4 className="font-medium" title={topic.label}>{topicHeading(topic.label)}</h4><span className="rounded bg-page px-2 py-0.5 text-xs text-muted">{`Priority ${priorityRank}`}</span></div><p className="mt-1 text-sm text-muted">{topicDescription(topic.description)}</p>{topic.subtopics?.length ? <ul className="mt-2 flex flex-wrap gap-2">{topic.subtopics.map((subtopic) => <li key={subtopic} className="rounded bg-accent-tint px-2 py-1 text-xs text-accent">{subtopic}</li>)}</ul> : null}</div>{questionIds.length ? <LinkButton href={`/kits/${kitId}/practice?questions=${questionIds.join(",")}`} variant="ghost" className="min-h-9 px-0">Practise related questions</LinkButton> : null}</li>;
         })}</ul>
       </div> : null}
     </section>
@@ -174,9 +185,9 @@ export function BuilderContent({ kitId }: { kitId: string }) {
         const completed = data.round_progress.completed_rounds.some((name) => name.trim().toLowerCase() === round.name.trim().toLowerCase());
         const preparing = data.round_progress.current_round.trim().toLowerCase() === round.name.trim().toLowerCase();
         const reportedQuestions = data.questions.filter((question) => question.source_type === "reported" && question.round_name?.trim().toLowerCase() === round.name.trim().toLowerCase());
-        return <li key={round.id} className="rounded border border-border bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{round.basis === "company_reports" ? `Reported format: ${round.name}` : round.basis === "job_description" ? round.name : `Comparable-role format: ${round.name}`}</h3><span className="text-xs text-muted">{completed ? "Completed" : preparing ? "Preparing" : "Upcoming"}</span></div><p className="mt-2 text-sm text-muted">{round.description}</p><p className="mt-1 text-xs text-muted">{round.basis === "job_description" ? "Explicitly stated in the job description" : round.basis === "company_reports" ? "Based on company interview reports; anecdotal, not a confirmed sequence" : "Based on comparable role reports; not confirmed for this company"}</p>{round.expectations?.length ? <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">{round.expectations.map((item) => <li key={item}>{item}</li>)}</ul> : null}{uniqueSources(round.sources).length ? <><p className="mt-3 text-xs text-muted">{uniqueSources(round.sources).length} sources · {round.confidence ? `${round.confidence} confidence` : "expectation confidence unavailable"}</p><ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">{uniqueSources(round.sources).map((source) => <li key={source.url}><a className="text-accent underline" href={source.url} target="_blank" rel="noreferrer">{sourceLabel(source)}</a></li>)}</ul></> : null}{reportedQuestions.length ? <div className="mt-4 border-t border-border pt-3"><h4 className="text-sm font-semibold">Previously reported questions</h4><ul className="mt-2 space-y-3">{reportedQuestions.map((question) => <li key={question.id} className="text-sm"><p>{question.prompt}</p><p className="mt-1 text-xs text-muted">Anecdotal report · {question.report_count ?? "Report count unavailable"} reports · {question.reported_at ?? "Date unavailable"} · reliability {question.reliability ?? "unverified"}</p>{question.practice_type === "coding" && safeExternalUrl(question.source_url) ? <a className="mt-1 inline-block text-accent underline" href={safeExternalUrl(question.source_url)!} target="_blank" rel="noreferrer">Open coding problem{question.source_platform ? ` on ${question.source_platform}` : ""} ↗</a> : <LinkButton className="mt-1 min-h-9 px-0" variant="ghost" href={`/kits/${kitId}/practice?questions=${question.id}`}>Practise in PrepKit</LinkButton>}</li>)}</ul></div> : null}</li>;
+        const expectations = roundOnlyExpectations(round, allTopics);
+        return <li key={round.id} className="rounded border border-border bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-semibold">{round.basis === "company_reports" ? `Reported format: ${round.name}` : round.basis === "job_description" ? round.name : `Comparable-role format: ${round.name}`}</h3><span className="text-xs text-muted">{completed ? "Completed" : preparing ? "Preparing" : "Upcoming"}</span></div><p className="mt-2 text-sm text-muted">{round.description}</p><p className="mt-1 text-xs text-muted">{round.basis === "job_description" ? "Explicitly stated in the job description" : round.basis === "company_reports" ? "Based on company interview reports; anecdotal, not a confirmed sequence" : "Based on comparable role reports; not confirmed for this company"}</p>{expectations.length ? <ul className="mt-3 list-disc space-y-1 pl-5 text-sm">{expectations.map((item) => <li key={item}>{item}</li>)}</ul> : null}{uniqueSources(round.sources).length ? <><p className="mt-3 text-xs text-muted">{uniqueSources(round.sources).length} sources · {round.confidence ? `${round.confidence} confidence` : "expectation confidence unavailable"}</p><ul className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs">{uniqueSources(round.sources).map((source) => <li key={source.url}><a className="text-accent underline" href={source.url} target="_blank" rel="noreferrer">{sourceLabel(source)}</a></li>)}</ul></> : null}{reportedQuestions.length ? <div className="mt-4 border-t border-border pt-3"><h4 className="text-sm font-semibold">Previously reported questions</h4><ul className="mt-2 space-y-3">{reportedQuestions.map((question) => <li key={question.id} className="text-sm"><p>{question.prompt}</p><p className="mt-1 text-xs text-muted">Anecdotal report · {question.report_count ?? "Report count unavailable"} reports · {question.reported_at ?? "Date unavailable"} · reliability {question.reliability ?? "unverified"}</p>{question.practice_type === "coding" && safeExternalUrl(question.source_url) ? <a className="mt-1 inline-block text-accent underline" href={safeExternalUrl(question.source_url)!} target="_blank" rel="noreferrer">Open coding problem{question.source_platform ? ` on ${question.source_platform}` : ""} ↗</a> : <LinkButton className="mt-1 min-h-9 px-0" variant="ghost" href={`/kits/${kitId}/practice?questions=${question.id}`}>Practise in PrepKit</LinkButton>}</li>)}</ul></div> : null}</li>;
       })}</ul>
-      {displayedRounds.some((round) => round.basis === "role_inference") ? <div className="mt-5"><h3 className="font-semibold">Additional practice areas</h3><p className="mt-1 text-sm text-muted">These can help you prepare, but they are not verified Microsoft interview rounds.</p><ul className="mt-3 space-y-3">{displayedRounds.filter((round) => round.basis === "role_inference").map((round) => <li key={round.id} className="rounded border border-border bg-white p-4"><div className="flex flex-wrap items-center justify-between gap-2"><h4 className="font-semibold">{round.name}</h4><span className="text-xs text-muted">{data.round_progress.completed_rounds.some((name) => name.trim().toLowerCase() === round.name.trim().toLowerCase()) ? "Completed" : data.round_progress.current_round.trim().toLowerCase() === round.name.trim().toLowerCase() ? "Preparing" : "Suggested"}</span></div><p className="mt-2 text-sm text-muted">{round.description}</p><p className="mt-1 text-xs text-muted">Practice suggestion based on the role; not a confirmed company format</p></li>)}</ul></div> : null}
       {data.round_progress.completed_rounds.length || data.round_progress.current_round ? <div className="mt-4"><h3 className="text-sm font-semibold">Your progress</h3>{data.round_progress.completed_rounds.length ? <p className="mt-1 text-sm">Completed: {data.round_progress.completed_rounds.join(", ")}</p> : null}{data.round_progress.current_round ? <p className="mt-1 text-sm">Preparing: {data.round_progress.current_round}</p> : null}</div> : <p className="mt-4 text-sm text-muted">You can update round progress after verifying the interview format.</p>}
     </section>
 

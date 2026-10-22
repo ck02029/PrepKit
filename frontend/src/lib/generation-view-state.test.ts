@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generationProgressPercent, generationViewState } from "./generation-view-state.ts";
+import { generationProgressPercent, generationViewState, nonDecreasingProgress } from "./generation-view-state.ts";
 
 const base = { steps: [], sources: [], coverage: { uncovered_requirement_ids: [], passes: 0 } };
 
@@ -26,4 +26,9 @@ test("completed fallback sections count toward progress instead of leaving the b
   assert.equal(generationProgressPercent(steps), 100);
   assert.equal(generationProgressPercent([{ state: "done" }, { state: "running" }]), 50);
   assert.equal(generationProgressPercent([]), 0);
+});
+
+test("generation progress never moves backward when a retry temporarily resets a section", () => {
+  assert.equal(nonDecreasingProgress(75, 50), 75);
+  assert.equal(nonDecreasingProgress(50, 75), 75);
 });

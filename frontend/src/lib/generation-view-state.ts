@@ -8,6 +8,10 @@ export function generationProgressPercent(steps: Array<{ state: "pending" | "run
   return Math.round((finished / steps.length) * 100);
 }
 
+export function nonDecreasingProgress(previous: number, current: number): number {
+  return Math.max(previous, current);
+}
+
 export function generationViewState(status: GenerationStatus | undefined, isLoading: boolean): GenerationViewState {
   if (!status) return isLoading ? "skeleton" : "failed";
   // A completed kit must open even when one or more sections need review.
