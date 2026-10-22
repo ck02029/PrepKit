@@ -137,6 +137,17 @@ test("crawler follows ranked same-origin links discovered on company pages", asy
   assert.equal(result.pages.at(-1)?.text,"Hiring process");
 });
 
+test("crawler strips PostgreSQL-incompatible Unicode and omits raw HTML from cached pages", async () => {
+  const fetcher=async(input:string)=>{
+    const url=new URL(input);
+    if(url.pathname==="/robots.txt")return {url:url.href,text:"User-agent: *",raw:""};
+    return {url:url.href,text:`Valid${String.fromCharCode(0)} ${String.fromCharCode(0xd800)}text`,raw:`<main>raw${String.fromCharCode(0)} html</main>`};
+  };
+  const result=await crawlCompany("https://example.com/",false,fetcher,async()=>undefined);
+  assert.deepEqual(result.pages,[{url:"https://example.com/",text:"Valid �text"}]);
+  assert.doesNotThrow(()=>JSON.stringify(result));
+});
+
 function response(status: number, headers: Record<string, string>, body: string): SafeFetchResponse {
   return { status, headers, body: Buffer.from(body) };
 }

@@ -149,6 +149,16 @@ export async function safeFetch(input: string, dependencies: SafeFetchDependenci
 export async function crawlCompany(home: string, skip: boolean, fetcher: typeof safeFetch = safeFetch, wait: (ms:number)=>Promise<void> = (ms)=>new Promise((resolve)=>setTimeout(resolve,ms))) {
   if (skip) return { pages: [] as { url: string; text: string }[], warnings: ["Web research was skipped by request."] };
   if (!home) return { pages: [] as { url: string; text: string }[], warnings: ["The official company website could not be identified from the company name."] };
+  // PostgreSQL text/jsonb cannot store NUL bytes or unpaired UTF-16 surrogates.
+  // Crawled HTML can contain both, so clean extracted text and never cache raw HTML.
+  const postgresSafeText = (value: string) => {
+    let output = "";
+    for (const character of value.replace(/\u0000/g, "")) {
+      const codePoint = character.codePointAt(0)!;
+      output += codePoint >= 0xd800 && codePoint <= 0xdfff ? "�" : character;
+    }
+    return output;
+  };
   const pages: { url: string; text: string }[] = []; const warnings: string[] = [];
   try {
     const requestedHome = new URL(home);
@@ -207,7 +217,7 @@ export async function crawlCompany(home: string, skip: boolean, fetcher: typeof 
       }catch(e){warnings.push(`${target.href}: ${e instanceof Error?e.message:"retrieval failed"}`);}
     }
   } catch (e) { warnings.push(e instanceof Error ? e.message : "Company site could not be retrieved."); }
-  return { pages, warnings };
+  return { pages: pages.map(({url,text})=>({url,text:postgresSafeText(text)})), warnings: warnings.map(postgresSafeText) };
 }
 
 /** Find an official company homepage when the user supplied a company name but no URL.
