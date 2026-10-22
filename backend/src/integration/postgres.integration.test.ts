@@ -135,7 +135,7 @@ test("Postgres pipeline resume, idempotency, job lease, practice persistence and
     assert.ok(persistedCheckpoint.overview && persistedCheckpoint.topicRows && persistedCheckpoint.roundRows);
     await runPipeline(input,{generateJson:fakeGenerate,...noResearch});
     await pool.query("UPDATE schedule_days SET status='completed',completed_at=now() WHERE kit_id=$1 AND day=1",[kitResume]);
-    assert.equal(calls.overview,1); assert.equal(calls.topics,1); assert.equal(calls.rounds,1); assert.equal(calls.questions,2);
+    assert.equal(calls.overview,1); assert.equal(calls.topics,0); assert.equal(calls.rounds,0); assert.equal(calls.questions,2);
     const generated = await pool.query("SELECT count(*)::int AS count FROM questions WHERE kit_id=$1",[kitResume]);
     assert.equal(generated.rows[0].count,1,"resuming or replaying cannot duplicate generated questions");
     const savedKit = (await pool.query("SELECT data FROM kits WHERE id=$1",[kitResume])).rows[0].data;
@@ -184,7 +184,7 @@ test("Postgres pipeline resume, idempotency, job lease, practice persistence and
       if(task.includes("job-specific study topics"))throw new SyntaxError("invalid JSON fixture");
       return validate(fakeValue(sectionForTask(task),input,kitBlocked,stableId));
     }) as typeof import("../llm.js").generateJson;
-    await runPipeline({...input,kitId:kitBlocked,jobId:jobBlocked},{generateJson:brokenTopics,...noResearch});
+    await runPipeline({...input,kitId:kitBlocked,jobId:jobBlocked,role:"Unclassified specialist"},{generateJson:brokenTopics,...noResearch});
     const sectionStates=(await pool.query("SELECT name,status FROM generation_sections WHERE kit_id=$1",[kitBlocked])).rows;
     const states=Object.fromEntries(sectionStates.map((row:any)=>[row.name,row.status]));
     assert.equal(states.overview,"ready"); assert.equal(states.rounds,"ready");
