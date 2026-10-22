@@ -27,6 +27,7 @@ export const researchSourceSchema = z.object({
   url: z.string().url(),
   title: z.string(),
   publisher: z.string(),
+  scope: z.enum(["company_specific", "role_level"]).optional(),
 });
 
 export const topicInsightSchema = z.object({
@@ -52,14 +53,14 @@ export const interviewRoundSchema = z.object({
   order: z.number().int().positive(),
   confidence: z.enum(["high", "medium", "low"]).nullable(),
   sources: z.array(researchSourceSchema),
-  basis: z.enum(["job_description", "company_reports", "role_reports", "role_inference"]).optional(),
+  basis: z.enum(["job_description", "company_reports", "role_reports", "mixed_reports", "role_inference"]).optional(),
   provenance: provenanceSchema.optional(),
   evidence_ids: z.array(z.string()).optional(),
 });
 
 export const interviewResearchSchema = z.object({
   status: z.enum(["pending", "researched", "unavailable"]),
-  research_scope: z.enum(["company_specific", "role_level", "role_baseline"]).optional(),
+  research_scope: z.enum(["company_specific", "role_level", "mixed", "role_baseline"]).optional(),
   summary: z.string(),
   job_description_interview_info: z.object({
     expected_round_count: z.number().int().positive().nullable(),

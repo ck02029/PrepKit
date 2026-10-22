@@ -1,6 +1,15 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { canonicalizeInterviewRounds, isRoundApplicableToCompany, matchesRole, roleFamilyFor, roleLevelInterviewQuery, roundsFromCandidateReports } from "./research.js";
+import { canonicalizeInterviewRounds, inferSeniorityLevel, isRoundApplicableToCompany, matchesRole, roleFamilyFor, roleLevelInterviewQuery, roundsFromCandidateReports } from "./research.js";
+
+test("seniority inference does not treat every software role as entry-level", () => {
+  assert.equal(inferSeniorityLevel("Software Dev Engineer I"), "Entry-level");
+  assert.equal(inferSeniorityLevel("Senior Software Engineer"), "Senior / lead");
+  assert.equal(inferSeniorityLevel("Staff Backend Engineer"), "Staff / principal");
+  assert.equal(inferSeniorityLevel("Software Engineer II"), "Mid-level");
+  assert.equal(inferSeniorityLevel("Backend Engineer", "Requires 5+ years of experience."), "Mid-level");
+  assert.equal(inferSeniorityLevel("Data Scientist"), "Unspecified");
+});
 
 test("round names that describe the same stage are merged with combined evidence", () => {
   const result = canonicalizeInterviewRounds([
@@ -43,6 +52,8 @@ test("recognizes common Software Development Engineer title variants for role re
   const role = "Software Dev Engineer I, Amazon University Talent Acquisition";
   assert.equal(roleFamilyFor(role)?.id, "software-engineering");
   assert.match(roleLevelInterviewQuery(role), /software development engineer/i);
+  assert.match(roleLevelInterviewQuery("Senior Software Engineer"), /senior lead experienced/i);
+  assert.match(roleLevelInterviewQuery("Software Engineer II"), /mid-level experienced/i);
 });
 
 test("candidate report fallback only emits stages explicitly present in report evidence", () => {

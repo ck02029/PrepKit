@@ -129,13 +129,17 @@ export async function generateJson<T>(task: string, input: unknown, validate: (v
     const group = await listKeysLeastUsed(providers.filter((item) => item.name === providerName));
     for (const spec of group) {
       let stopProvider = false;
-      for (let repair = 0; repair < 1; repair++) {
+      let previousResponseText = "";
+      for (let repair = 0; repair < 2; repair++) {
         let responseText = "";
         let parsed: unknown;
         try {
-          const prompt = buildGenerationPrompt(task, input);
+          const repairTask = repair === 0 ? task : `${task}\nREPAIR: Your previous response did not match the required JSON structure. Return corrected JSON only. Validation feedback: ${failures.at(-1) ?? "invalid structured output"}. Keep all facts grounded in the supplied evidence.`;
+          const repairInput = repair === 0 ? input : { original_input: input, previous_response: previousResponseText };
+          const prompt = buildGenerationPrompt(repairTask, repairInput);
           const maxOutputTokens = outputTokenBudget(timing.section);
           responseText = await callWithKey(spec, (key) => providerName === "gemini" ? callGemini(key, prompt, maxOutputTokens) : callChatCompletions(key, prompt, providerName, maxOutputTokens), timing);
+          previousResponseText = responseText;
           parsed = JSON.parse(responseText);
           const result = validate(parsed);
           await pool.query("INSERT INTO ai_generation_cache(cache_key,result,expires_at) VALUES($1,$2,now()+interval '30 days') ON CONFLICT(cache_key) DO UPDATE SET result=EXCLUDED.result,expires_at=EXCLUDED.expires_at", [cacheKey, JSON.stringify(result)]);
@@ -148,7 +152,11 @@ export async function generateJson<T>(task: string, input: unknown, validate: (v
           }
           if (error instanceof TransientGenerationError) { transientErrors.push(error); failures.push(`${spec.name}:${spec.keyId}: temporarily unavailable`); stopProvider = true; break; }
           if (error instanceof SyntaxError || isValidationError(error)) {
-            failures.push(`${spec.name}:${spec.keyId}: invalid structured output`);
+            const validationFeedback = isValidationError(error)
+              ? error.issues.slice(0, 8).map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`).join("; ")
+              : "response was not valid JSON";
+            failures.push(`${spec.name}:${spec.keyId}: invalid structured output (${validationFeedback})`);
+            if (repair === 0) continue;
             stopProvider = true;
             break;
           }

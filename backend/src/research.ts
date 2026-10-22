@@ -430,23 +430,41 @@ export function roundsFromCandidateReports(reports:InterviewResearchHit[],compan
  * as role-level research. Search result pages are references, not instructions. */
 export async function searchInterviewResearch(company:string,role:string,jobDescription=""):Promise<InterviewResearchHit[]>{
   const experienceClues=extractExperienceSearchClues(jobDescription);
-  const companyQuery=`${company} ${role} ${experienceClues} interview experience hiring rounds candidate report`;
-  const companyResults=await searchGoogleGrounded(companyQuery);
-  const companyHits=companyResults.filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).slice(0,6);
-  const hnHits=(await searchInterviewDiscussion(`${company} ${role}`)).filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"company_specific" as const}));
-  const searchHits=companyHits.length||hnHits.length?[]:await searchDuckDuckGoInterviewReports(companyQuery);
-  const exactCandidates=dedupeInterviewHits([...companyHits.map((hit)=>({...hit,scope:"company_specific" as const})),...hnHits,...searchHits.filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"company_specific" as const}))]).slice(0,6);
-  const exact=(await enrichInterviewHits(exactCandidates)).filter(isLikelyCandidateInterviewReport);
-  if(exact.length)return exact;
-
   const generalQuery=roleLevelInterviewQuery(role,jobDescription);
-  const general=await searchGoogleGrounded(generalQuery);
-  const roleHits=general.filter((hit)=>isRelevantInterviewResult(hit)&&matchesRole(hit,role)&&isLikelyCandidateInterviewReport(hit)).slice(0,6).map((hit)=>({...hit,scope:"role_level" as const}));
-  const searchRoleHits=roleHits.length?[]:await searchDuckDuckGoInterviewReports(generalQuery);
-  const roleResearch=await enrichInterviewHits([...roleHits,...searchRoleHits.filter((hit)=>isRelevantInterviewResult(hit)&&matchesRole(hit,role)&&isLikelyCandidateInterviewReport(hit)).slice(0,4).map((hit)=>({...hit,scope:"role_level" as const}))].slice(0,4));
-  if(roleResearch.length)return roleResearch;
-
-  return [];
+  // Search distinct report intents before summarizing: broad company reports,
+  // named interview stages, and comparable roles at other employers. This is a
+  // bounded discovery pass, not an exhaustive crawl of every page on the web.
+  const companyQuery=`${company} ${role} ${experienceClues} interview experience candidate report rounds`;
+  const stageQuery=`${company} ${role} interview experience online assessment coding behavioral system design candidate report`;
+  const comparableQuery=`${generalQuery} coding assessment behavioral design interview candidate report`;
+  const [companyGoogle,roleGoogle,companySearch,stageSearch,roleSearch,hnHits]=await Promise.all([
+    searchGoogleGrounded(companyQuery),
+    searchGoogleGrounded(generalQuery),
+    searchDuckDuckGoInterviewReports(companyQuery),
+    searchDuckDuckGoInterviewReports(stageQuery),
+    searchDuckDuckGoInterviewReports(comparableQuery),
+    searchInterviewDiscussion(`${company} ${role}`),
+  ]);
+  const companyCandidates=dedupeInterviewHits([
+    ...companyGoogle.filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"company_specific" as const})),
+    ...companySearch.filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"company_specific" as const})),
+    ...stageSearch.filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"company_specific" as const})),
+    ...hnHits.filter((hit)=>isRelevantInterviewResult(hit)&&mentionsCompany(hit,company)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"company_specific" as const})),
+  ]).slice(0,8);
+  const comparableCandidates=dedupeInterviewHits([
+    ...roleGoogle.filter((hit)=>isRelevantInterviewResult(hit)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"role_level" as const})),
+    ...roleSearch.filter((hit)=>isRelevantInterviewResult(hit)&&matchesRole(hit,role)).map((hit)=>({...hit,scope:"role_level" as const})),
+  ]).filter((hit)=>!companyCandidates.some((companyHit)=>companyHit.url===hit.url)).slice(0,6);
+  const [companyReports,comparableReports]=await Promise.all([
+    enrichInterviewHits(companyCandidates),
+    enrichInterviewHits(comparableCandidates),
+  ]);
+  // A comparable-role source may supplement company evidence, but its scope is
+  // retained so later round/topic summaries cannot misattribute it.
+  return [
+    ...companyReports.filter(isLikelyCandidateInterviewReport),
+    ...comparableReports.filter(isLikelyCandidateInterviewReport),
+  ].slice(0,12);
 }
 
 export type InterviewRoleFamily={id:string;label:string;searchTerms:string;matches:RegExp[];technical:boolean};
@@ -496,9 +514,29 @@ export const interviewRoleFamilies:InterviewRoleFamily[]=[
 
 export function roleFamilyFor(role:string){return interviewRoleFamilies.find((family)=>family.matches.some((pattern)=>pattern.test(role)))}
 
+/** Infer level conservatively; an unqualified title is never assumed to be entry-level. */
+export function inferSeniorityLevel(role:string,jobDescription=""){
+  const title=role.toLowerCase();
+  const context=`${role}\n${jobDescription}`.toLowerCase();
+  if(/\b(intern|internship|co[- ]?op)\b/.test(title))return "Internship";
+  if(/\b(staff|principal|distinguished|fellow)\b/.test(title))return "Staff / principal";
+  if(/\b(director|head of|vp|vice president)\b/.test(title))return "Director / executive";
+  if(/\b(manager|engineering manager|people manager)\b/.test(title))return "Manager";
+  if(/\b(senior|sr\.?|lead|architect|sde\s*iii|engineer\s*iii|level\s*3)\b/.test(title))return "Senior / lead";
+  if(/\b(ii|2|mid[- ]level|intermediate)\b/.test(title)&&/\b(engineer|developer|analyst|scientist|designer|manager|sde)\b/.test(title))return "Mid-level";
+  if(/\b(fresher|new grad(?:uate)?|graduate|entry[- ]level|junior|sde\s*i|sde\s*1|engineer\s*i|software engineer i|associate)\b/.test(title))return "Entry-level";
+  if(/\b(10|[1-9])\s*\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/.test(context)){
+    const years=Number(context.match(/\b(\d{1,2})\s*\+?\s*(?:years?|yrs?)\s+(?:of\s+)?experience\b/)?.[1]??0);
+    if(years>=8)return "Senior / lead";
+    if(years>=3)return "Mid-level";
+  }
+  if(/\b(0|zero|1|one|2|two)\s*(?:-|to|–)\s*(?:2|two|3|three)\s*(?:years?|yrs?)\b|\b(entry[- ]level|new graduate|fresher|junior)\b/.test(context))return "Entry-level";
+  return "Unspecified";
+}
+
 export function roleLevelInterviewQuery(role:string,jobDescription=""){
-  const value=role.toLowerCase();
-  const level=/intern/.test(value)?"intern internship":/fresher|new.?grad|graduate|entry.level|junior|\bsde\s*1\b|software (?:development|dev) engineer i\b|software engineer i\b/.test(value)?"entry level junior new graduate fresher SDE 1":/senior|staff|principal|lead|manager|director/.test(value)?"senior experienced": "";
+  const inferredLevel=inferSeniorityLevel(role,jobDescription);
+  const level=inferredLevel==="Internship"?"intern internship":inferredLevel==="Entry-level"?"entry level junior new graduate fresher":inferredLevel==="Mid-level"?"mid-level experienced":inferredLevel==="Senior / lead"?"senior lead experienced":inferredLevel==="Staff / principal"?"staff principal distinguished":inferredLevel==="Manager"?"manager leadership":inferredLevel==="Director / executive"?"director executive leadership":"";
   const family=roleFamilyFor(role);
   const searchFamily=family?.searchTerms??role.split(",")[0]!;
   const experienceClues=extractExperienceSearchClues(jobDescription);
