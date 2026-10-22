@@ -1,6 +1,8 @@
 const conciseTitles: Array<[RegExp, string]> = [
   [/^data structures and algorithms$/i, "DSA"],
   [/^coding implementation$/i, "Coding"],
+  [/^leadership principles(?: & behavioral)?$/i, "Leadership Principles"],
+  [/^online assessment$/i, "Online assessment"],
   [/^core computer science foundations$/i, "CS fundamentals"],
   [/^object-oriented and low-level design$/i, "LLD / OOD"],
   [/^light system design \(optional for entry-level\)$/i, "System design (entry-level)"],

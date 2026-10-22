@@ -23,6 +23,7 @@ export type ScheduleDay = {
   topic_ids: string[];
   requirement_ids: string[];
   minutes: number;
+  study_minutes?: number;
 };
 export type SchedulePlan = { days_available: number; days: ScheduleDay[]; warnings: string[] };
 
@@ -34,6 +35,7 @@ type ScheduleItem = {
   requirementIds: string[];
   difficulty: number;
   roundOrder: number;
+  topicPass: number;
 };
 
 /** Build a deterministic, budget-bounded, topic-prioritized schedule. Items which
@@ -49,6 +51,7 @@ export function buildSchedule(
 ): SchedulePlan {
   if (!Number.isInteger(days) || days < 1) throw new RangeError("Schedule days must be a positive integer.");
   if (!Number.isInteger(dailyBudget) || dailyBudget < 1) throw new RangeError("The daily time budget must be a positive integer.");
+  const planningBudget = Math.min(60, dailyBudget);
 
   const topicOrder = new Map(roundSequence.map((id, index) => [id, index]));
   const items: ScheduleItem[] = [
@@ -60,6 +63,7 @@ export function buildSchedule(
       requirementIds: question.requirement_ids,
       difficulty: question.difficulty ?? 1,
       roundOrder: question.topic_ids?.length ? Math.min(...question.topic_ids.map((id) => topicOrder.get(id) ?? 100)) : 100,
+      topicPass: 0,
     })),
     ...cards.map((card) => ({
       id: card.id,
@@ -69,6 +73,7 @@ export function buildSchedule(
       requirementIds: card.requirement_ids,
       difficulty: 1,
       roundOrder: card.topic_ids?.length ? Math.min(...card.topic_ids.map((id) => topicOrder.get(id) ?? 100)) : 100,
+      topicPass: 0,
     })),
   ];
 
@@ -80,6 +85,7 @@ export function buildSchedule(
     topic_ids: [],
     requirement_ids: [],
     minutes: 0,
+    study_minutes: 0,
   }));
   const warnings: string[] = [];
   const scheduledIds = new Set<string>();
@@ -90,14 +96,21 @@ export function buildSchedule(
   }
   if (duplicateIds.size) throw new Error(`Schedule items must have unique IDs: ${[...duplicateIds].join(", ")}`);
 
-  // Follow study-topic priority, then spread practice evenly across days.
+  // Give every topic its first practice item before scheduling a second item
+  // for any topic. This preserves the priority order across the first days.
   items.sort((a, b) => a.roundOrder - b.roundOrder || b.difficulty - a.difficulty || b.minutes - a.minutes || a.id.localeCompare(b.id));
+  const appearances = new Map<number, number>();
   for (const item of items) {
-    if (item.minutes > dailyBudget) {
-      warnings.push(`${item.type} ${item.id} needs ${item.minutes} minutes, above the ${dailyBudget}-minute daily budget, so it was not scheduled.`);
+    item.topicPass = appearances.get(item.roundOrder) ?? 0;
+    appearances.set(item.roundOrder, item.topicPass + 1);
+  }
+  items.sort((a, b) => a.topicPass - b.topicPass || a.roundOrder - b.roundOrder || b.difficulty - a.difficulty || b.minutes - a.minutes || a.id.localeCompare(b.id));
+  for (const item of items) {
+    if (item.minutes > planningBudget) {
+      warnings.push(`${item.type} ${item.id} needs ${item.minutes} minutes, above the ${planningBudget}-minute daily budget, so it was not scheduled.`);
       continue;
     }
-    const eligible = dayRows.filter((candidate) => candidate.minutes + item.minutes <= dailyBudget);
+    const eligible = dayRows.filter((candidate) => candidate.minutes + item.minutes <= planningBudget);
     const day = eligible.sort((a, b) => {
       const aRepeated = item.requirementIds.filter((id) => a.requirement_ids.includes(id)).length;
       const bRepeated = item.requirementIds.filter((id) => b.requirement_ids.includes(id)).length;
@@ -130,7 +143,7 @@ export function buildSchedule(
         .slice(0, 2);
       const reviewedTopics = new Set<string>();
       for (const card of reviewCards) {
-        if (day.minutes + 5 > dailyBudget) break;
+        if (day.minutes + 5 > planningBudget) break;
         day.flashcard_ids.unshift(card.id);
         day.topic_ids.push(...(card.topic_ids ?? []));
         day.requirement_ids.push(...card.requirement_ids);
@@ -138,6 +151,10 @@ export function buildSchedule(
         for (const id of card.topic_ids ?? []) if (yesterdayTopics.has(id)) reviewedTopics.add(id);
       }
       if (reviewedTopics.size) reviewTopicsByDay.set(day.day, [...reviewedTopics].map((id) => topicLabels.get(id) ?? "yesterday's topics"));
+    }
+    if (day.question_ids.length || day.flashcard_ids.length) {
+      day.study_minutes = planningBudget - day.minutes;
+      day.minutes += day.study_minutes;
     }
     day.topic_ids = [...new Set(day.topic_ids)];
     day.requirement_ids = [...new Set(day.requirement_ids)];

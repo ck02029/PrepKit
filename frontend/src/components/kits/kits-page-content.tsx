@@ -20,6 +20,18 @@ const statusStyles = {
   failed: "bg-[#fce9e6] text-[#8a1f14]",
 };
 
+function displayRole(value: string) {
+  const text = value.trim();
+  if (/^sde\s*1$/i.test(text)) return "SDE 1";
+  if (/^sde\s*2$/i.test(text)) return "SDE 2";
+  return text.replace(/\b\w+/g, (word) => word[0]!.toUpperCase() + word.slice(1));
+}
+
+function displayCompany(value: string) {
+  if (/^microsoft$/i.test(value.trim())) return "Microsoft";
+  return value.trim().replace(/\b\w+/g, (word) => word[0]!.toUpperCase() + word.slice(1));
+}
+
 export function KitsPageContent({ duplicate = false }: { duplicate?: boolean }) {
   const queryClient = useQueryClient();
   const router = useRouter();
@@ -85,7 +97,7 @@ export function KitsPageContent({ duplicate = false }: { duplicate?: boolean }) 
           {visibleKits.map((kit) => {
             const status = kit.status ?? "ready";
             return <li key={kit.id} className="flex flex-col gap-3 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="min-w-0"><Link href={`/kits/${kit.id}`} className="font-semibold text-ink hover:text-accent">{kit.title}</Link><p className="mt-1 truncate text-sm text-muted">{kit.company} · {kit.role}</p></div>
+              <div className="min-w-0"><Link href={`/kits/${kit.id}`} className="font-semibold text-ink hover:text-accent">{`${displayCompany(kit.company)} · ${displayRole(kit.role)}`}</Link><p className="mt-1 truncate text-sm text-muted">{displayCompany(kit.company)} · {displayRole(kit.role)}</p></div>
               <div className="flex flex-wrap items-center gap-2"><span className={`rounded px-2.5 py-1 text-xs font-medium ${statusStyles[status]}`}>{status === "needs_review" ? "Needs review" : status[0].toUpperCase() + status.slice(1)}</span>{status === "failed" ? <Button variant="secondary" onClick={() => retryMutation.mutate(kit.id)}>Try again</Button> : null}<LinkButton variant="secondary" href={`/kits/${kit.id}${status === "generating" ? "?generating=1" : ""}`}>Open</LinkButton><Button variant="ghost" aria-label={`Delete ${kit.title}`} onClick={() => { if (window.confirm(`Delete “${kit.title}”?`)) removeMutation.mutate(kit.id); }}>Delete</Button></div>
             </li>;
           })}

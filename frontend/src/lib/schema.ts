@@ -185,6 +185,7 @@ export const scheduleDaySchema = z.object({
   topic_ids: z.array(z.string()).optional(),
   requirement_ids: z.array(z.string()).optional(),
   minutes: z.number().int().nonnegative(),
+  study_minutes: z.number().int().nonnegative().optional(),
 });
 
 export const scheduleSchema = z.object({

@@ -356,6 +356,54 @@ export function isRoundApplicableToCompany(round:{name:string;description:string
   return !(/\b(bar[- ]raiser|leadership principles|\bLPs?\b)\b/i.test(text)&&!/\bamazon\b/i.test(company));
 }
 
+/** Normalize synonymous names for the same interview stage and fold interviewer titles
+ * (for example Bar Raiser or hiring manager) into the stage they conduct. */
+export function canonicalizeInterviewRounds<T extends {name:string;description:string;sources:string[]}>(rounds:T[],company:string):T[]{
+  type Stage="assessment"|"coding"|"design-low"|"design-high"|"behavioral"|"interviewer";
+  const classify=(name:string):Stage|undefined=>{
+    const value=name.toLowerCase();
+    if(/online assessment|\boa\b|coding assessment/.test(value))return "assessment";
+    if(/bar raiser|hiring manager|managerial interview|manager interview/.test(value))return "interviewer";
+    if(/low.level design|object.oriented design|\blld\b|\bood\b|class design/.test(value))return "design-low";
+    if(/system design|high.level design|\bhld\b|architecture interview/.test(value))return "design-high";
+    if(/leadership principles|\blps?\b|behavior|behaviour|star (interview|round)|competency|culture fit|experience[- ]based interview|experience interview/.test(value))return "behavioral";
+    if(/\bdsa\b|data structures|algorithms|coding|technical screen|problem.solving|debugging/.test(value))return "coding";
+    return undefined;
+  };
+  const canonicalName=(stage:Stage,amazon:boolean)=>stage==="assessment"?"Online assessment (OA)":stage==="coding"?"DSA and coding interview":stage==="design-low"?"Low-level design (LLD/OOD)":stage==="design-high"?"System design":stage==="behavioral"&&amazon?"Leadership Principles interview":stage==="behavioral"?"Behavioral interview":"Behavioral / experience interview";
+  const groups=new Map<string,T>();
+  const amazon=/^amazon$/i.test(company.trim());
+  for(const source of rounds){
+    const stage=classify(source.name);
+    // Interviewer titles describe who is asking, not what the round assesses.
+    const key=stage??`unique:${source.name.trim().toLowerCase()}`;
+    const prior=groups.get(key);
+    if(!prior){
+      const name=stage?canonicalName(stage,amazon):source.name;
+      const description=stage==="interviewer"?`${source.description} Reports identify a ${/bar raiser/i.test(source.name)?"Bar Raiser":"hiring manager"} as interviewer; that title does not by itself establish a separate interview stage.`:source.description;
+      groups.set(key,{...source,name,description,sources:[...new Set(source.sources)]});
+      continue;
+    }
+    prior.sources=[...new Set([...prior.sources,...source.sources])];
+    const note=stage==="interviewer"
+      ?` Reports also identify a ${/bar raiser/i.test(source.name)?"Bar Raiser":"hiring manager"} as interviewer; that title does not by itself establish a separate interview stage.`
+      :` Reports use “${source.name}” as another name for this interview format.`;
+    if(!prior.description.includes(note))prior.description+=note;
+  }
+  const interviewer=groups.get("interviewer");
+  if(interviewer){
+    const behavioral=groups.get("behavioral");
+    const target=behavioral??interviewer;
+    if(!behavioral)target.name=canonicalName("interviewer",amazon);
+    if(behavioral){
+      target.sources=[...new Set([...target.sources,...interviewer.sources])];
+      target.description+=` ${interviewer.description}`;
+      groups.delete("interviewer");
+    }
+  }
+  return [...groups.values()];
+}
+
 /** Deterministic, source-linked backup when the language model cannot summarize interview reports. */
 export function roundsFromCandidateReports(reports:InterviewResearchHit[],company="this company"){
   const stages=[

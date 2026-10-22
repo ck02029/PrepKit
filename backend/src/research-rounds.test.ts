@@ -1,6 +1,43 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isRoundApplicableToCompany, matchesRole, roleFamilyFor, roleLevelInterviewQuery, roundsFromCandidateReports } from "./research.js";
+import { canonicalizeInterviewRounds, isRoundApplicableToCompany, matchesRole, roleFamilyFor, roleLevelInterviewQuery, roundsFromCandidateReports } from "./research.js";
+
+test("round names that describe the same stage are merged with combined evidence", () => {
+  const result = canonicalizeInterviewRounds([
+    { name: "DSA round", description: "Arrays and graphs.", sources: ["https://reports.example/1"] },
+    { name: "Coding interview", description: "Live coding.", sources: ["https://reports.example/2"] },
+    { name: "High-level design", description: "Scalable architecture.", sources: ["https://reports.example/3"] },
+    { name: "Architecture interview", description: "System components.", sources: ["https://reports.example/4"] },
+    { name: "Object-oriented design", description: "Class design.", sources: ["https://reports.example/5"] },
+    { name: "LLD round", description: "Low-level design.", sources: ["https://reports.example/6"] },
+    { name: "Leadership Principles round", description: "Principle-based stories.", sources: ["https://reports.example/7"] },
+    { name: "Behavioral interview", description: "STAR examples.", sources: ["https://reports.example/8"] },
+    { name: "Bar Raiser round", description: "Interviewer was a Bar Raiser.", sources: ["https://reports.example/9"] },
+  ], "Amazon");
+
+  assert.deepEqual(result.map((round) => round.name), [
+    "DSA and coding interview",
+    "System design",
+    "Low-level design (LLD/OOD)",
+    "Leadership Principles interview",
+  ]);
+  assert.equal(result[0]?.sources.length, 2);
+  assert.equal(result[1]?.sources.length, 2);
+  assert.equal(result[2]?.sources.length, 2);
+  assert.equal(result[3]?.sources.length, 3);
+  assert.match(result[3]?.description ?? "", /Bar Raiser.*does not by itself establish a separate interview stage/i);
+});
+
+test("behavioral aliases use a neutral canonical name outside Amazon", () => {
+  const result = canonicalizeInterviewRounds([
+    { name: "Competency-based interview", description: "Competency examples.", sources: ["https://reports.example/1"] },
+    { name: "STAR round", description: "Behavioral stories.", sources: ["https://reports.example/2"] },
+  ], "Contoso");
+
+  assert.equal(result.length, 1);
+  assert.equal(result[0]?.name, "Behavioral interview");
+  assert.equal(result[0]?.sources.length, 2);
+});
 
 test("recognizes common Software Development Engineer title variants for role research", () => {
   const role = "Software Dev Engineer I, Amazon University Talent Acquisition";

@@ -2,7 +2,7 @@ import { z } from "zod";
 import { pool } from "./db.js";
 import { id, transaction } from "./shared.js";
 import { generateJson, ProviderQuotaWait } from "./llm.js";
-import { crawlCompany, discoverCompanyWebsite, extractJobDescriptionInterviewInfo, isRoundApplicableToCompany, roleFamilyFor, roundsFromCandidateReports, searchInterviewDiscussion, searchInterviewResearch } from "./research.js";
+import { canonicalizeInterviewRounds, crawlCompany, discoverCompanyWebsite, extractJobDescriptionInterviewInfo, isRoundApplicableToCompany, roleFamilyFor, roundsFromCandidateReports, searchInterviewDiscussion, searchInterviewResearch } from "./research.js";
 import { validateKitData } from "./kit-data-schema.js";
 import { buildSchedule } from "./scheduler.js";
 import { stableId } from "./identifiers.js";
@@ -190,7 +190,7 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
     const roundsResult=(independent[1] as PromiseFulfilledResult<Awaited<typeof roundsPromise>>).value;
     const extractedBrief=companyBriefFromDescription(input.jd,input.company);
     const generatedBrief=overviewResult.value;
-    const generatedBriefHasEvidence=generatedBrief&&Boolean(`${generatedBrief.summary} ${generatedBrief.what_they_do}`.trim())&&!/no evidence|unavailable|not available/i.test(`${generatedBrief.summary} ${generatedBrief.what_they_do}`);
+    const generatedBriefHasEvidence=generatedBrief&&Boolean(`${generatedBrief.summary} ${generatedBrief.what_they_do}`.trim())&&!/no evidence|no company information|no information (?:available|provided)|unavailable|not available/i.test(`${generatedBrief.summary} ${generatedBrief.what_they_do}`);
     const brief=generatedBriefHasEvidence?generatedBrief:extractedBrief??generatedBrief??{summary:"Company overview is unavailable.",what_they_do:"",sources:[]};
     const reportUrls=new Set(interviewEvidence.map((item)=>item.url));
     const evidencedRounds=(roundsResult.value?.rounds??[]).filter((round)=>round.sources.some((url)=>reportUrls.has(url))&&isRoundApplicableToCompany(round,input.company));
@@ -201,7 +201,7 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
     const jdRoundRows=jdInterviewInfo.stages.map((stage)=>({name:stage.name,description:`The job description explicitly states: “${stage.quote}”`,confidence:"high" as const,sources:[] as string[],basis:"job_description" as const}));
     const roundRows:{summary:string;rounds:Array<{name:string;description:string;confidence:"high"|"medium"|"low";sources:string[];basis?:"job_description"|"role_inference"}>}={
       summary:[reportRoundRows.summary,jdInterviewInfo.details.length?`Job-description interview details: ${jdInterviewInfo.details.join(" ")}`:""].filter(Boolean).join(" "),
-      rounds:[...jdRoundRows,...reportRoundRows.rounds.filter((round)=>!jdRoundRows.some((jdRound)=>jdRound.name.toLowerCase()===round.name.toLowerCase()))],
+      rounds:canonicalizeInterviewRounds([...jdRoundRows,...reportRoundRows.rounds],input.company),
     };
     const inferredRoundRows=jdRoundRows.length||reportRoundRows.rounds.length?[]:roleBasedRoundRows(input.role,input.jd);
     if(inferredRoundRows.length){
@@ -210,17 +210,26 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
     }
     const architecturePractice=isProjectArchitectureRole(input.role);
     const resumePracticeName=architecturePractice?"Resume and project deep dive (practice)":"Resume and experience deep dive (practice)";
-    const rolePracticeRounds=[
-      {name:resumePracticeName,description:"Role-based preparation: be ready to explain real work from your resume, your specific contribution, decisions, impact, and lessons learned. This is a practice area, not a confirmed interview round.",confidence:"low" as const,sources:[] as string[],basis:"role_inference" as const},
-      ...(architecturePractice?[{name:"Project architecture discussion (practice)",description:"Role-based preparation: practise explaining the architecture of a real project you built, including requirements, components, data flow, trade-offs, failures, and scaling. This is a practice area, not a confirmed interview round.",confidence:"low" as const,sources:[] as string[],basis:"role_inference" as const}]:[]),
-    ];
-    roundRows.rounds.push(...rolePracticeRounds.filter((practice)=>!roundRows.rounds.some((round)=>round.name.toLowerCase()===practice.name.toLowerCase()||(/resume|experience|behavior|behaviour/i.test(practice.name)&&/resume|experience|behavior|behaviour/i.test(round.name))||(/architecture|project/i.test(practice.name)&&/architecture|project/i.test(round.name)))));
+    // Resume/project preparation stays in Topics; it is not an interview stage.
     const allowedRoundUrls=new Set(reportRoundRows.rounds.flatMap((round)=>round.sources));
     const curatedTopics=roleBasedTopicRows(input.role,input.jd,requirements);
     const topicsResult=await runSection("topics","topicRows",()=>curatedTopics
       ?Promise.resolve(curatedTopics)
       :generate("Build study topics for the stages summarized from interview reports. The interview stages and source scope are provided; create distinct role-relevant subjects inside those stages, not a duplicate list of the stages. Use evidence from the supplied matching-role reports first, then the exact role and job description to fill gaps. For software engineering, an online assessment is primarily DSA/coding; technical rounds may cover coding and core CS; a system-design/LLD round should have LLD/OOD, HLD only at appropriate seniority, OOP, OS, databases, and networking; resume/manager stages should cover projects and experience. For every topic, include a round_name matching one supplied round exactly when appropriate. If evidence is absent, use clearly labeled role-based study guidance and do not claim a confirmed company process. Keep the topic headings short, subtopics concrete, and study schedule topic-based. Return topics in priority order.", {role:input.role,job_description:input.jd,requirements,role_family:roleFamilyFor(input.role)?.id??"other",research_scope:researchScope,interview_reports:interviewEvidence,evidence:topicEvidence,rounds:roundRows.rounds.map((round)=>({name:round.name,description:round.description,basis:round.basis??"role_inference"}))}, (v)=>topicsOut.parse(v),"topics"));
     const generatedTopicRows:Array<z.infer<typeof topicsOut>[number]>=roleBasedTopicRows(input.role,input.jd,requirements)??(topicsResult.value?.length?topicsResult.value:fallbackTopicRows(roundRows.rounds,interviewEvidence,input.role));
+    const roleStageTopics=[...generatedTopicRows];
+    const softwareRole=roleFamilyFor(input.role)?.id==="software-engineering";
+    if(softwareRole){
+      const dsa=roleStageTopics.find((topic)=>/data structures and algorithms|\bDSA\b/i.test(topic.label));
+      if(dsa){const codingTopics=roleStageTopics.filter((topic)=>topic!==dsa&&/coding|implementation/i.test(topic.label));const codingSubtopics=codingTopics.flatMap((topic)=>topic.subtopics).filter((subtopic)=>!/complexity|edge case|boundary|data structure/i.test(subtopic));dsa.subtopics=[...new Set([...dsa.subtopics,...codingSubtopics,"Implement a clean solution and test edge cases in your chosen language"])];for(let index=roleStageTopics.length-1;index>=0;index--)if(codingTopics.includes(roleStageTopics[index]!))roleStageTopics.splice(index,1);}
+      const lpRound=roundRows.rounds.find((round)=>/leadership principles/i.test(round.name));
+      const amazonSoftware=/^amazon$/i.test(input.company.trim());
+      const amazonIntern=/intern/i.test(`${input.role} ${input.jd}`);
+      const amazonFullTime=amazonSoftware&&!amazonIntern;
+      if(amazonSoftware&&roundRows.rounds.some((round)=>/online assessment/i.test(round.name))&&!roleStageTopics.some((topic)=>/online assessment/i.test(topic.label)))roleStageTopics.splice(dsa?roleStageTopics.indexOf(dsa)+1:0,0,{label:"Online assessment",description:"Amazon's university guide lists different online assessment sections by role type; confirm the exact format and timing in your invitation.",subtopics:["Coding assessment: about 70 minutes for the full-time university SDE format","Workstyles: about 15 minutes; answer consistently and honestly","Work simulation: about 60 minutes for full-time SDE roles; internships may use a different format",...(amazonIntern?["Follow the internship invitation for its coding and workstyles sections"]:["Optional survey: about 5 minutes; allow roughly 2 hours 25 minutes before it"])],requirement_ids:[],round_name:roundRows.rounds.find((round)=>/online assessment/i.test(round.name))?.name});
+      if(lpRound){const behavioral=roleStageTopics.find((topic)=>/behavior|behaviour|collaboration/i.test(topic.label));const lpTopic={label:"Leadership Principles",description:"Prepare truthful examples that show how you apply Amazon's Leadership Principles; candidate reports make this a high-priority practice area, not a guaranteed separate round.",subtopics:["Prepare STAR examples for Ownership and Customer Obsession","Explain a difficult decision, disagreement, or failure and what you learned","Use specific actions and measurable outcomes; expect follow-up questions","Map one real example to more than one relevant principle without forcing it"],requirement_ids:behavioral?.requirement_ids??[],round_name:lpRound.name};if(behavioral){lpTopic.subtopics=[...new Set([...lpTopic.subtopics,...behavioral.subtopics])];roleStageTopics.splice(roleStageTopics.indexOf(behavioral),1);}roleStageTopics.splice(Math.min(amazonFullTime?2:1,roleStageTopics.length),0,lpTopic);}
+      if(isEarlyCareerSoftwareRole(input.role,input.jd)){const systemIndex=roleStageTopics.findIndex((topic)=>/system design|architecture/i.test(topic.label));if(systemIndex>=0){const [systemTopic]=roleStageTopics.splice(systemIndex,1);roleStageTopics.push(systemTopic!);}}
+    }
     const rolePracticeTopics: z.infer<typeof topicsOut>[number][]=[
       {label:resumePracticeName,description:"Prepare clear, truthful stories from your resume for behavioral, hiring-manager, and final-stage conversations. This is general preparation, not a prediction of this employer's process.",subtopics:["Choose a real achievement or project and explain your personal contribution","Walk through a difficult decision, trade-off, or setback and what you learned","Describe outcomes and distinguish your work from the team's"],requirement_ids:[]},
       ...(architecturePractice?[{label:"Project architecture discussion (practice)",description:"Practise explaining the design of a project you actually built. These are general engineering prompts, not predictions of this employer's process.",subtopics:["State the users, requirements, scale, and constraints","Sketch components, APIs, data flow, and storage","Explain trade-offs, security, failure handling, and what you would change to scale"],requirement_ids:[]}]:[]),
@@ -230,9 +239,14 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
       const a=normalize(left),b=normalize(right);
       return a===b||((/resume|project/.test(a)&&/resume|project/.test(b))&&(/resume/.test(a)===/resume/.test(b))&&(/architecture/.test(a)===/architecture/.test(b)));
     };
-    const topicRows=[...generatedTopicRows.filter((topic)=>!rolePracticeTopics.some((practice)=>samePracticeArea(practice.label,topic.label))),...rolePracticeTopics];
+    const topicRows=[...roleStageTopics.filter((topic)=>!rolePracticeTopics.some((practice)=>samePracticeArea(practice.label,topic.label))),...rolePracticeTopics];
+    for(const round of roundRows.rounds){
+      const alreadyCovered=topicRows.some((topic)=>topic.round_name===round.name||roundForTopic(topic.label,input.role,[round])===round.name);
+      if(!alreadyCovered)topicRows.push(topicGuidanceForRound(round.name,input.role));
+    }
+    prioritizeStudyTopics(topicRows,input.role,input.company,roundRows.rounds);
     let topics=topicRows.map((t)=>{const validIds=t.requirement_ids.filter((x)=>requirements.some((r)=>r.id===x));const inferred=/resume|project|practice/i.test(t.label)||validIds.some((rid)=>requirements.find((r)=>r.id===rid)?.basis==="role_inference");const quotes=validIds.map((rid)=>requirements.find((r)=>r.id===rid)?.evidence_quote).filter((quote):quote is string=>Boolean(quote));const citedIds=(t.evidence_ids??[]).filter((evidenceId)=>interviewChunks.some((item)=>item.id===evidenceId));const citedReports=interviewChunks.filter((item)=>citedIds.includes(item.id));const reportSupporting=/resume|project|practice/i.test(t.label)?[]:citedReports.length?citedReports:retrieveEvidence(interviewChunks,`${t.label} ${t.description} ${t.subtopics.join(" ")}`,3);const companyReport=reportSupporting.some((item)=>item.sourceType==="company_interview_report");const roleReport=reportSupporting.some((item)=>item.sourceType==="role_interview_report");const basis=inferred?"role_inference" as const:companyReport?"company_reports" as const:roleReport?"role_reports" as const:"role_inference" as const;return {...t,id:stableId(input.kitId,"topic",t.label),requirement_ids:validIds,learning_resources:resourcesForTopic(t.label),basis,rationale:inferred?"This is a general role-level practice baseline, not a company-reported interview topic.":companyReport?"This practice area is supported by this company's candidate interview reports.":roleReport?"This practice area appears in comparable role-level interview reports; it is not confirmed for this employer.":"No matching report evidence was available, so this is labeled as role-level guidance.",evidence:quotes,evidence_ids:[...new Set([...citedIds,...reportSupporting.map((item)=>item.id)])],confidence:(topicsResult.failed?"low":companyReport?"medium":roleReport?"low":"low") as "high"|"medium"|"low",provenance:(topicsResult.failed||inferred?"inferred":reportSupporting.length?"researched":"inferred") as "inferred"|"researched"};});
-    topics=topics.map((topic)=>({...topic,round_name:roundRows.rounds.find((round)=>round.name===topic.round_name)?.name??roundForTopic(topic.label,input.role,roundRows.rounds)??undefined}));
+    topics=topics.map((topic)=>{const isGeneralPractice=/\(practice\)/i.test(topic.label);const roundName=isGeneralPractice?undefined:roundRows.rounds.find((round)=>round.name===topic.round_name)?.name??roundForTopic(topic.label,input.role,roundRows.rounds)??undefined;const round=roundRows.rounds.find((candidate)=>candidate.name===roundName);const sources=[...new Set(round?.sources??[])];return {...topic,round_name:roundName,confidence:sources.length>=3?"medium" as const:sources.length?"low" as const:topic.confidence};});
 
     let coverageRun:{questions:z.infer<typeof questionsOut>;passes:number;uncovered:string[]}={questions:[],passes:0,uncovered:requirements.filter((r)=>r.priority==="must").map((r)=>r.id)};
     const previousData=(await pool.query("SELECT data FROM kits WHERE id=$1",[input.kitId])).rows[0]?.data??{};
@@ -272,8 +286,10 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
           const difficulty=typeof difficultyRaw==="number"?difficultyRaw:/easy|beginner|basic/i.test(String(difficultyRaw))?1:/hard|advanced/i.test(String(difficultyRaw))?3:2;
           const answerOutline=String(row.answer_outline??row.answerOutline??row.answer_outline_text??row.solution_outline??row.answer??"");
           const linkedTopicIds=linkIds(row.topic_ids??row.topicIds??row.topics,topics);
-          const topicIds=linkedTopicIds.length?linkedTopicIds:inferQuestionTopicIds(category,`${prompt} ${answerOutline}`,topics);
-          return [{prompt,answer_outline:answerOutline,category,requirement_ids:requirementIds,topic_ids:topicIds,round_name:row.round_name??row.roundName??null,difficulty}];
+          const candidateTopics=linkedTopicIds.length?topics.filter((topic)=>linkedTopicIds.includes(topic.id)):topics;
+          const topicIds=inferQuestionTopicIds(category,`${prompt} ${answerOutline}`,candidateTopics);
+          const topicRequirementIds=topics.filter((topic)=>topicIds.includes(topic.id)).flatMap((topic)=>topic.requirement_ids);
+          return [{prompt,answer_outline:answerOutline,category,requirement_ids:[...new Set([...requirementIds,...topicRequirementIds])],topic_ids:topicIds,round_name:row.round_name??row.roundName??null,difficulty}];
         });
         return questionsOut.parse(normalized);
       };
@@ -379,13 +395,13 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
     for(const oldTopic of previousData.practice_topics??[])if(preservedTopicIds.has(oldTopic.id)&&!topics.some((topic)=>topic.id===oldTopic.id))topics.push({...oldTopic,subtopics:Array.isArray(oldTopic.subtopics)?oldTopic.subtopics:[],requirement_ids:Array.isArray(oldTopic.requirement_ids)?oldTopic.requirement_ids.filter((id:string)=>validRequirementIds.has(id)):[],evidence_ids:Array.isArray(oldTopic.evidence_ids)?oldTopic.evidence_ids:[],confidence:oldTopic.confidence??"low",provenance:oldTopic.provenance??"inferred"});
     let plan=buildSchedule(input.days,questions,flashcards,input.dailyBudget,requirements,topics,topics.map((topic)=>topic.id));
     await setStage("schedule",questionFailed||cardsFailed?"degraded":"ready",questionFailed||cardsFailed?`Schedule includes fallback content. ${plan.warnings.join(" ")}`:plan.warnings.join(" "));
-    const roundContent = roundRows.rounds.map((r,i)=>{const sourceUrls=r.sources.filter((url)=>allowedRoundUrls.has(url));const sources=sourceUrls.map((url)=>({url,title:url,publisher:new URL(url).hostname.replace(/^www\./," ").trim()}));const companyReported=sourceUrls.some((url)=>sourceDocuments.some((item)=>item.url===url&&item.sourceType==="company_interview_report"));const roleReported=sourceUrls.some((url)=>sourceDocuments.some((item)=>item.url===url&&item.sourceType==="role_interview_report"));const supporting=chunks.filter((chunk)=>sourceUrls.includes(chunk.url));const basis=r.basis??(companyReported?"company_reports" as const:roleReported?"role_reports" as const:"role_inference" as const);return { ...r,id:stableId(input.kitId,"round",r.name),order:i+1,expectations:[],sources,confidence:sourceUrls.length||basis==="job_description"?r.confidence:"low" as const,basis,provenance:sourceUrls.length||basis==="job_description"?"researched" as const:"inferred" as const,evidence_ids:supporting.map((chunk)=>chunk.id) };});
+    const roundContent = roundRows.rounds.map((r,i)=>{const sourceUrls=[...new Set(r.sources.filter((url)=>allowedRoundUrls.has(url)))];const sources=sourceUrls.map((url)=>{const document=sourceDocuments.find((item)=>item.url===url);return {url,title:document?.title&&document.title!==url?document.title:`Interview report · ${input.company}`,publisher:new URL(url).hostname.replace(/^www\./,"").trim()};});const companyReported=sourceUrls.some((url)=>sourceDocuments.some((item)=>item.url===url&&item.sourceType==="company_interview_report"));const roleReported=sourceUrls.some((url)=>sourceDocuments.some((item)=>item.url===url&&item.sourceType==="role_interview_report"));const supporting=chunks.filter((chunk)=>sourceUrls.includes(chunk.url));const basis=r.basis??(companyReported?"company_reports" as const:roleReported?"role_reports" as const:"role_inference" as const);const confidence=sourceUrls.length>=3?"medium" as const:sourceUrls.length?"low" as const:basis==="job_description"?"high" as const:"low" as const;const earlyCareerNote=isEarlyCareerSoftwareRole(input.role,input.jd)&&/system design|architecture/i.test(r.name)?" For an entry-level role, treat deeper HLD as light/optional unless the job description or recruiter explicitly asks for it; prioritize DSA and core CS.":"";return { ...r,description:`${r.description}${earlyCareerNote}`,id:stableId(input.kitId,"round",r.name),order:i+1,expectations:[],sources,confidence,basis,provenance:sourceUrls.length||basis==="job_description"?"researched" as const:"inferred" as const,evidence_ids:supporting.map((chunk)=>chunk.id) };});
     const roundNames=new Set(roundContent.map((round)=>round.name));
     const previousRoundProgress=previousData.round_progress??{};
     const data = {
       source:{company:input.company,company_url:companyUrl,role:input.role,location:"",jd_chars:input.jd.length,researched_at:now(),pages_used:research.pages.map((p)=>p.url),web_research_skipped:input.skipResearch},
       company_brief:{summary:brief.summary,what_they_do:brief.what_they_do,sources:brief.sources.filter((url)=>overviewEvidence.some((item)=>item.url===url)),origin,updatedAt:now()},
-      interview_research:{status:discussions.length?"researched":"unavailable",research_scope:researchScope,summary:roundRows.summary,job_description_interview_info:{expected_round_count:jdInterviewInfo.expectedRoundCount,details:jdInterviewInfo.details,stages:jdInterviewInfo.stages.map((stage)=>stage.name)},topics:topics.map((t)=>{const sourceUrls=[...new Set(chunks.filter((chunk)=>(t.evidence_ids??[]).includes(chunk.id)&&(chunk.sourceType==="company_interview_report"||chunk.sourceType==="role_interview_report")).map((chunk)=>chunk.url))];return {id:t.id,label:t.label,description:t.description,subtopics:t.subtopics??[],round_name:t.round_name,frequency:"unknown" as const,confidence:t.confidence??"low",requirement_ids:t.requirement_ids,sources:sourceUrls.map((url)=>({url,title:url,publisher:new URL(url).hostname.replace(/^www\./,"")})),provenance:t.provenance??"inferred",evidence_ids:t.evidence_ids??[]};}),expected_round_count:jdInterviewInfo.expectedRoundCount,rounds:roundContent},
+      interview_research:{status:discussions.length?"researched":"unavailable",research_scope:researchScope,summary:roundRows.summary,job_description_interview_info:{expected_round_count:jdInterviewInfo.expectedRoundCount,details:jdInterviewInfo.details,stages:jdInterviewInfo.stages.map((stage)=>stage.name)},topics:topics.map((t)=>{const stage=roundContent.find((round)=>round.name===t.round_name);const sourceUrls=stage?stage.sources.map((source)=>source.url):[...new Set(chunks.filter((chunk)=>(t.evidence_ids??[]).includes(chunk.id)&&(chunk.sourceType==="company_interview_report"||chunk.sourceType==="role_interview_report")).map((chunk)=>chunk.url))];return {id:t.id,label:t.label,description:t.description,subtopics:t.subtopics??[],round_name:t.round_name,frequency:"unknown" as const,confidence:stage?.confidence??t.confidence??"low",requirement_ids:t.requirement_ids,sources:stage?stage.sources:sourceUrls.map((url)=>({url,title:url,publisher:new URL(url).hostname.replace(/^www\./,"")})),provenance:t.provenance??"inferred",evidence_ids:t.evidence_ids??[]};}),expected_round_count:jdInterviewInfo.expectedRoundCount,rounds:roundContent},
       round_progress:{expected_round_count:jdInterviewInfo.expectedRoundCount,completed_rounds:(previousRoundProgress.completed_rounds??[]).filter((name:string)=>roundNames.has(name)),current_round:roundNames.has(previousRoundProgress.current_round)?previousRoundProgress.current_round:""},
       role:{title:input.role,seniority:isEarlyCareerSoftwareRole(input.role,input.jd)?"Entry-level":"",responsibilities:requirements.slice(0,6).map((r:any)=>r.text),requirements},questions,practice_topics:topics,flashcards,schedule:plan,coverage:{uncovered_requirement_ids:uncovered,passes:input.regenerateCategory||input.appendFreshQuestions?Math.max(coverageRun.passes,previousData.coverage?.passes??0):coverageRun.passes},
       archived_items:{questions:questionMerge.archived,flashcards:cardMerge.archived},
@@ -465,6 +481,7 @@ function codingLinksForTopic(label:string){
 function resourcesForTopic(label:string){
   const value=label.toLowerCase();
   const resources:{label:string;url:string}[]=[];
+  if(/online assessment/i.test(value))resources.push({label:"Amazon University SDE online assessment prep",url:"https://amazon.jobs/content/en-gb/how-we-hire/university/sde-oa"});
   if(/data structure|algorithm|complexity|\bdsa\b/.test(value))resources.push({label:"Google Tech Dev Guide: Data Structures and Algorithms",url:"https://techdevguide.withgoogle.com/paths/dsa/sequence-3/replace-words/"});
   if(/\bgo\b|golang/.test(value))resources.push({label:"The Go Programming Language",url:"https://go.dev/doc/"});
   if(/typescript/.test(value))resources.push({label:"TypeScript Handbook",url:"https://www.typescriptlang.org/docs/handbook/intro.html"});
@@ -524,7 +541,7 @@ function roleBasedTopicRows(role:string,jd:string,requirements:Array<{id:string;
       {label:"Resume and project deep dive (practice)",description:"Prepare to explain real work you personally did; this is useful practice, not a prediction of a particular interview round.",subtopics:["State the problem, your role, and your personal contribution","Explain one technical decision, trade-off, or setback","Describe outcomes, what you learned, and what you would change","Be ready to sketch a project you actually built"],requirement_ids:[]},
       {label:"Behavioral and collaboration examples",description:"Prepare concise, truthful examples that show how you work with other people and learn from challenges.",subtopics:["A disagreement or feedback you handled constructively","A mistake, setback, or change in approach","How you contributed to a team outcome","What you learned and would do differently"],requirement_ids:[]},
     ];
-    const topicTerms=[[/algorithm|data structure|coding|programming|problem.?solving|python|java|c\+\+|c#|javascript|typescript/i],[/coding|programming|python|java|c\+\+|c#|javascript|typescript|testing|debug/i],[/operating system|database|sql|network|oop|object.oriented|computer science/i],[/design pattern|object.oriented|low.level design|class|interface/i],[/architecture|system design|distributed|scalab|cloud|api/i],[/project|experience|developed|built|internship/i],[/communication|collaborat|team|leadership|behavior|behaviour/i]];
+    const topicTerms=[[/algorithm|data structure|coding|programming|problem.?solving|python|java|c\+\+|c#|javascript|typescript/i],[/coding|programming|technical challenges|technical solutions|python|java|c\+\+|c#|javascript|typescript|testing|debug/i],[/operating system|database|sql|network|oop|object.oriented|computer science|fundamental/i],[/design pattern|object.oriented|low.level design|class|interface/i],[/architecture|system design|distributed|multi.?tier|scalab|cloud|api/i],[/project|experience|developed|built|internship/i],[/communication|articulate|collaborat|team|leadership|behavior|behaviour|feedback/i]];
     rows=rows.map((row,index)=>({...row,requirement_ids:requirementsForRoleTopic(requirements,topicTerms[index]!)}));
   }else if(family==="data-analytics"){
     rows=[{label:"SQL and data querying",description:"Practise extracting and validating data for business questions.",subtopics:["Joins, grouping, CTEs, and window functions","Nulls, duplicates, and data quality checks","Explain query choices and performance basics"],requirement_ids:[]},{label:"Metrics and analytical reasoning",description:"Turn an ambiguous question into a measurable analysis.",subtopics:["Define a metric and its denominator","Segment results and compare cohorts","Check assumptions, bias, and uncertainty"],requirement_ids:[]},{label:"Statistics and experiments",description:"Use appropriate statistical reasoning and explain limits.",subtopics:["Distributions and confidence intervals","Hypothesis tests and practical significance","Experiment design and common pitfalls"],requirement_ids:[]},{label:"Dashboards and communication",description:"Present findings so a decision-maker can act on them.",subtopics:["Choose a clear visual for the question","Summarize insight, caveats, and recommendation","Validate data definitions and refresh behavior"],requirement_ids:[]},{label:"Project and stakeholder deep dive",description:"Prepare to explain real analytical work and your contribution.",subtopics:["Business question and stakeholders","Data sources, methods, and decisions","Impact, limitations, and learning"],requirement_ids:[]}];
@@ -599,12 +616,15 @@ function roundForTopic(label:string,role:string,rounds:Array<{name:string}>){
   const family=roleFamilyFor(role)?.id;
   const find=(pattern:RegExp)=>rounds.find((round)=>pattern.test(round.name))?.name;
   if(family==="software-engineering"){
+    if(/leadership principles/i.test(label))return find(/leadership principles/i)??find(/behavior|behaviour/i);
+    if(/online assessment/i.test(label))return find(/online assessment|\bOA\b/i);
     if(/data structures|algorithms|\bDSA\b|coding implementation/i.test(label))return find(/online assessment|assessment|coding/i)??find(/technical/i);
-    if(/resume|behavior|behaviour|project/i.test(label))return find(/resume|behavior|behaviour|manager|experience/i);
-    if(/core computer science|operating systems|database|networking/i.test(label))return find(/technical|core cs/i)??find(/system design|design/i);
-    if(/low.level design|object.oriented|\bOOD\b/i.test(label))return find(/system design|LLD|low.level design|design/i)??find(/technical/i);
-    if(/system design|architecture/i.test(label))return find(/system design|architecture|design/i)??find(/technical/i);
-    return find(/online assessment|assessment|technical|coding|system design/i);
+    if(/resume|project/i.test(label))return find(/resume|project|manager|experience/i);
+    if(/behavior|behaviour|leadership principles/i.test(label))return find(/behavior|behaviour|leadership principles/i);
+    if(/core computer science|operating systems|database|networking/i.test(label))return find(/technical|core cs/i)??find(/dsa|coding/i);
+    if(/low.level design|object.oriented|\bOOD\b|\bLLD\b/i.test(label))return find(/LLD|low.level design|OOD|object.oriented/i)??find(/technical/i);
+    if(/system design|architecture/i.test(label))return find(/system design|architecture/i)??find(/technical/i);
+    return find(/online assessment|assessment|technical|coding/i);
   }
   if(family==="human-resources"){
     if(/experience|examples|resume|collaboration/i.test(label))return find(/experience|manager|behavior|behaviour/i);
@@ -620,7 +640,34 @@ function roundForTopic(label:string,role:string,rounds:Array<{name:string}>){
   if(/resume|project|experience|behavior|behaviour|leadership/i.test(label))return find(/experience|resume|behavior|behaviour|manager/i);
   if(/design|architecture/i.test(label))return find(/design|architecture|technical/i);
   if(/scenario|case|analytics|statistics|SQL|metrics/i.test(label))return find(/case|assessment|technical|skills/i);
-  return rounds[0]?.name;
+  return undefined;
+}
+
+function topicGuidanceForRound(roundName:string,role:string):z.infer<typeof topicsOut>[number]{
+  const name=roundName.toLowerCase();
+  const software=roleFamilyFor(role)?.id==="software-engineering";
+  if(/leadership principles|behavior|behaviour|bar raiser|hiring manager|manager|experience|resume/.test(name))return {label:/leadership principles/.test(name)?"Leadership Principles":"Resume & experience",description:"Prepare examples and reasoning relevant to this reported interview format; reports do not establish a fixed sequence.",subtopics:["Choose a truthful example from work, study, or a project","Explain your specific actions, decisions, and trade-offs","Give the outcome, feedback, and what you learned"],requirement_ids:[],round_name:roundName};
+  if(/online assessment|\boa\b|assessment/.test(name))return {label:"Assessment practice",description:"Prepare for the assessment elements described in reports and verify the exact format in your invitation.",subtopics:software?["Solve timed role-relevant coding problems","State assumptions and analyze complexity","Test boundary cases before submitting"]:["Read instructions and constraints carefully","Work through a timed role-relevant task","Check edge cases and explain decisions"],requirement_ids:[],round_name:roundName};
+  if(/design|architecture|lld|ood/.test(name))return {label:software?"Design & CS fundamentals":"Design & practical reasoning",description:"Study the design subjects associated with this reported format at the level appropriate to the role.",subtopics:software?["OOP, interfaces, and object relationships","LLD: requirements, APIs, components, and data flow","Core CS: operating systems, databases, and networking","HLD and scaling only when appropriate for the role"]:["Clarify requirements, users, scale, and constraints","Define components, data flow, and failure handling","Explain trade-offs and validation"],requirement_ids:[],round_name:roundName};
+  if(/coding|technical|problem.solving|dsa/.test(name))return {label:software?"DSA & coding":"Technical problem solving",description:"Practice the technical skills directly associated with this reported format.",subtopics:software?["Arrays, strings, hash maps, trees, and graphs","Choose an approach and explain time and space complexity","Test empty, duplicate, and boundary cases"]:["Clarify the task and constraints","Work through a representative technical problem","Validate the result and explain trade-offs"],requirement_ids:[],round_name:roundName};
+  return {label:`${roundName} preparation`,description:"Study the subjects and exercises directly relevant to this reported format; the report does not confirm its placement in a fixed sequence.",subtopics:["Identify the skills this format is intended to assess","Practice a realistic example using the role requirements","Explain assumptions, decisions, and results"],requirement_ids:[],round_name:roundName};
+}
+
+function prioritizeStudyTopics(topics:Array<z.infer<typeof topicsOut>[number]>,role:string,company:string,rounds:Array<{name:string;sources:string[]}>){
+  const software=roleFamilyFor(role)?.id==="software-engineering";
+  const amazon=/^amazon$/i.test(company.trim());
+  const key=(topic:z.infer<typeof topicsOut>[number])=>{
+    const label=topic.label.toLowerCase();
+    if(software&&/data structures|algorithms|\bdsa\b|coding/.test(label))return 10;
+    if(amazon&&/leadership principles|behavior|behaviour/.test(label))return 20;
+    if(/online assessment|assessment/.test(label))return 15;
+    if(/core computer science|operating systems|database|networking/.test(label))return 30;
+    if(/low.level design|object.oriented|\bood\b|system design|architecture/.test(label))return 60;
+    if(/resume|project|experience|behavior|behaviour|leadership/.test(label))return 40;
+    const round=rounds.find((candidate)=>candidate.name===topic.round_name);
+    return round?.sources.length?35:50;
+  };
+  topics.sort((a,b)=>key(a)-key(b));
 }
 
 function requirementsForRoleTopic(requirements:Array<{id:string;text:string;evidence_quote?:string}>,patterns:RegExp[]){

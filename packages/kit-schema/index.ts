@@ -13,7 +13,7 @@ export const kitDataSchema=z.object({
   round_progress:z.object({expected_round_count:z.number().int().positive().nullable(),completed_rounds:z.array(z.string()),current_round:z.string()}).default({expected_round_count:null,completed_rounds:[],current_round:""}),
   role:z.object({title:z.string(),seniority:z.string(),responsibilities:z.array(z.string()),requirements:z.array(requirement)}),
   questions:z.array(question),practice_topics:z.array(topic).default([]),flashcards:z.array(flashcard),
-  schedule:z.object({days_available:z.number().int().positive(),days:z.array(z.object({day:z.number().int().positive(),focus:z.string(),question_ids:z.array(z.string()),flashcard_ids:z.array(z.string()).optional(),topic_ids:z.array(z.string()).optional(),requirement_ids:z.array(z.string()).optional(),minutes:z.number().int().nonnegative()})),warnings:z.array(z.string()).optional()}),
+  schedule:z.object({days_available:z.number().int().positive(),days:z.array(z.object({day:z.number().int().positive(),focus:z.string(),question_ids:z.array(z.string()),flashcard_ids:z.array(z.string()).optional(),topic_ids:z.array(z.string()).optional(),requirement_ids:z.array(z.string()).optional(),minutes:z.number().int().nonnegative(),study_minutes:z.number().int().nonnegative().optional()})),warnings:z.array(z.string()).optional()}),
   coverage:z.object({uncovered_requirement_ids:z.array(z.string()),passes:z.number().int().nonnegative()}),
   archived_items:z.object({questions:z.array(question).default([]),flashcards:z.array(flashcard).default([])}).optional(),
 });

@@ -19,6 +19,7 @@ test("schedule properties hold for generated inputs", () => {
       for (const day of plan.days) {
         assert.ok(Number.isInteger(day.minutes));
         assert.ok(day.minutes <= budget);
+        assert.ok(day.minutes <= Math.min(60, budget));
       }
       const assigned = plan.days.flatMap((day) => [...day.question_ids, ...day.flashcard_ids]);
       assert.equal(new Set(assigned).size, assigned.length, "no scheduled item appears twice");
@@ -43,6 +44,16 @@ test("harder questions are scheduled before easier questions for the same requir
     {id:"hard",difficulty:3,requirement_ids:["r1"]},
   ],[],15,[{id:"r1",text:"System design",priority:"must"}],[]);
   assert.deepEqual(plan.days.map((day)=>day.question_ids),[["hard"],["easy"]]);
+});
+
+test("schedule keeps practice, review cards, and focused study within 60 minutes", () => {
+  const plan=buildSchedule(1,[{id:"q1",practice_type:"interview",difficulty:2,requirement_ids:[],topic_ids:["t1"]}],
+    [{id:"c1",requirement_ids:[],topic_ids:["t1"]},{id:"c2",requirement_ids:[],topic_ids:["t1"]}],120,[],[{id:"t1",label:"DSA"}],["t1"]);
+  const day=plan.days[0]!;
+  assert.equal(day.minutes,60);
+  assert.equal(day.study_minutes,35);
+  assert.equal(day.question_ids.length,1);
+  assert.equal(day.flashcard_ids.length,2);
 });
 
 test("rebuilding a schedule retains completed day progress", () => {
