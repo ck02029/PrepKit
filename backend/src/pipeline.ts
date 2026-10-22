@@ -70,7 +70,13 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
   let checkpoint=(await pool.query("SELECT checkpoint FROM generation_jobs WHERE id=$1",[input.jobId])).rows[0]?.checkpoint??{};
   generationRevision=typeof checkpoint._generation_revision==="string"?checkpoint._generation_revision:"";
   const runSection=async<T>(name:string,key:string,generateSection:()=>Promise<T>):Promise<{value:T|null;failed:boolean}>=>{
-    if(Object.prototype.hasOwnProperty.call(checkpoint,key)){console.log(JSON.stringify({event:"generation_timing",jobId:input.jobId,section:name,operation:"section",elapsedMs:0,outcome:"checkpoint_hit"}));return {value:checkpoint[key] as T,failed:false};}
+    const fallbackKey=`${key}_failed`;
+    if(Object.prototype.hasOwnProperty.call(checkpoint,key)){
+      const failed=checkpoint[fallbackKey]===true;
+      await setStage(name,failed?"degraded":"ready",failed?"AI output was unusable; fallback content was used. Review this section before relying on it.":"");
+      console.log(JSON.stringify({event:"generation_timing",jobId:input.jobId,section:name,operation:"section",elapsedMs:0,outcome:"checkpoint_hit"}));
+      return {value:checkpoint[key] as T|null,failed};
+    }
     await setStage(name,"running");
     let value:T;
     const startedAt=performance.now();
@@ -80,10 +86,13 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
       if(error instanceof ProviderQuotaWait||isTransientGenerationError(error)||error instanceof Error&&error.message==="CANCELLED")throw error;
       console.warn(JSON.stringify({event:"generation_section_fallback",jobId:input.jobId,section:name,error:error instanceof Error?error.message.slice(0,1200):"unknown error"}));
       await setStage(name,"degraded","AI output was unusable; fallback content was used. Review this section before relying on it.");
+      await pool.query("UPDATE generation_jobs SET checkpoint=checkpoint || $2::jsonb,heartbeat_at=now(),lease_until=now()+interval '90 seconds',updated_at=now() WHERE id=$1",[input.jobId,JSON.stringify({[key]:null,[fallbackKey]:true})]);
+      checkpoint={...checkpoint,[key]:null,[fallbackKey]:true};
       return {value:null,failed:true};
     }
-    await pool.query("UPDATE generation_jobs SET checkpoint=checkpoint || $2::jsonb,heartbeat_at=now(),lease_until=now()+interval '90 seconds',updated_at=now() WHERE id=$1",[input.jobId,JSON.stringify({[key]:value})]);
+    await pool.query("UPDATE generation_jobs SET checkpoint=(checkpoint - $3::text[]) || $2::jsonb,heartbeat_at=now(),lease_until=now()+interval '90 seconds',updated_at=now() WHERE id=$1",[input.jobId,JSON.stringify({[key]:value}),[fallbackKey]]);
     checkpoint={...checkpoint,[key]:value};
+    delete checkpoint[fallbackKey];
     await setStage(name,"ready");
     return {value,failed:false};
   };
@@ -260,12 +269,13 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
         "questions",
       );
       const generateCategories=async(categories:[z.infer<typeof questionsOut>[number]["category"],any[]][],repairIds?:string[])=>{
-        const rows:z.infer<typeof questionsOut>=[];
-        for(const [category,requestedRequirements] of categories){
+        const generated=await Promise.allSettled(categories.map(async([category,requestedRequirements])=>{
           const focused=repairIds?requirements.filter((requirement:any)=>repairIds.includes(requirement.id)&&requirementCategory(requirement)===category):requestedRequirements.length?requestedRequirements.filter((requirement:any)=>requirementCategory(requirement)===category):requirements.filter((requirement:any)=>requirementCategory(requirement)===category);
-          rows.push(...await generateQuestions(category,focused,Boolean(repairIds)));
-        }
-        return rows;
+          return generateQuestions(category,focused,Boolean(repairIds));
+        }));
+        const failures=generated.filter((item):item is PromiseRejectedResult=>item.status==="rejected");
+        if(failures.length)throw failures.find((item)=>item.reason instanceof ProviderQuotaWait)?.reason??failures[0].reason;
+        return generated.flatMap((item)=>item.status==="fulfilled"?item.value:[]);
       };
       const questionPromise=runSection("questions","coverageRun",async()=>{
         const preserved=previousQuestions.filter((question:any)=>!input.regenerateCategory||question.category!==input.regenerateCategory);
