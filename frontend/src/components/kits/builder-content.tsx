@@ -43,6 +43,32 @@ function topicDescription(value: string) {
   return value.replace(/^Study for this reported or explicitly JD-stated interview format\.\s*/i, "");
 }
 
+function conciseRequirementText(value: string) {
+  const text = value.trim().replace(/\s+/g, " ");
+  const summaries: Array<[RegExp, string]> = [
+    [/strong fundamental understanding of computer science/i, "Strong computer science fundamentals."],
+    [/one or more areas of specialized knowledge/i, "Depth in one technical area plus broad engineering skills."],
+    [/navigating and managing your work in new code bases/i, "Can navigate unfamiliar codebases and languages."],
+    [/experience and familiarity with programming/i, "Programming experience through projects, coursework, or work."],
+    [/clear written communication skills/i, "Clear written communication with teammates and stakeholders."],
+    [/learn unfamiliar systems/i, "Can independently learn unfamiliar systems and seek guidance."],
+    [/leverage ai tools/i, "Uses AI to speed development and carefully validates its output."],
+    [/previous internships or other multi-person projects/i, "Team project experience, including giving and acting on feedback."],
+    [/high quality pull requests/i, "Writes well-tested pull requests and delivers reliable work."],
+    [/at least 1 year of university education/i, "One year of university study or equivalent experience."],
+  ];
+  const match = summaries.find(([pattern]) => pattern.test(text));
+  if (match) return match[1];
+  const firstSentence = text.split(/(?<=[.!?])\s+/)[0] ?? text;
+  if (firstSentence.length <= 105) return firstSentence.replace(/[.!?]+$/, "");
+  const shortened = firstSentence.slice(0, 102).replace(/\s+\S*$/, "");
+  return `${shortened}…`;
+}
+
+function sameRequirementText(first: string, second: string) {
+  return normalizeStudyText(first) === normalizeStudyText(second);
+}
+
 function roundOnlyExpectations(round: KitData["interview_research"]["rounds"][number], topics: KitData["interview_research"]["topics"]) {
   const topicDetails = topics.flatMap((topic) => [topic.label, ...(topic.subtopics ?? [])]).map(normalizeStudyText).filter(Boolean);
   const seen = new Set<string>();
@@ -159,7 +185,7 @@ export function BuilderContent({ kitId }: { kitId: string }) {
         <div className="rounded border border-border bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Target role</p>
           <p className="mt-3 text-sm leading-7">{overviewLines.join(" ")}</p>
-          <div className="mt-4 border-t border-border pt-4"><h3 className="text-sm font-semibold">Requirements</h3><p className="mt-1 text-xs text-muted">From the job description. These guide practice, not interview-round predictions.</p>{data.role.requirements.length ? <ul className="mt-3 space-y-2">{data.role.requirements.map((requirement) => <li key={requirement.id} className="text-sm"><span className={`mr-2 rounded px-1.5 py-0.5 text-[11px] ${requirement.priority === "must" ? "bg-[#fce9e6] text-[#8a1f14]" : "bg-nice-bg text-nice-text"}`}>{requirement.priority === "must" ? "Required" : "Preferred"}</span>{requirement.text}{requirement.evidence_quote ? <p className="mt-1 text-xs text-muted">JD: “{requirement.evidence_quote}”</p> : null}</li>)}</ul> : <p className="mt-3 text-sm text-muted">No explicit requirements were extracted. Add the job description to tailor this kit.</p>}</div>
+          <div className="mt-4 border-t border-border pt-4"><h3 className="text-sm font-semibold">Requirements</h3><p className="mt-1 text-xs text-muted">Key qualifications from the job description.</p>{data.role.requirements.length ? <ul className="mt-3 space-y-2">{data.role.requirements.map((requirement) => <li key={requirement.id} className="text-sm"><span className={`mr-2 rounded px-1.5 py-0.5 text-[11px] ${requirement.priority === "must" ? "bg-[#fce9e6] text-[#8a1f14]" : "bg-nice-bg text-nice-text"}`}>{requirement.priority === "must" ? "Required" : "Preferred"}</span><span title={requirement.text}>{conciseRequirementText(requirement.text)}</span>{requirement.evidence_quote && !sameRequirementText(requirement.evidence_quote, requirement.text) ? <details className="mt-1 text-xs text-muted"><summary className="cursor-pointer">View JD wording</summary><p className="mt-1">{requirement.evidence_quote}</p></details> : null}</li>)}</ul> : <p className="mt-3 text-sm text-muted">No explicit requirements were extracted. Add the job description to tailor this kit.</p>}</div>
         </div>
         <div className="rounded border border-border bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">About {formatCompany(data.source.company)}</p>
