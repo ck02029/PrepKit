@@ -6,8 +6,8 @@ This repository uses PostgreSQL rather than the assessment's preferred MongoDB. 
 
 ## Demo links
 
-- **Live app (Render):** [https://prepkit-frontend-0ln5.onrender.com](https://prepkit-frontend-0ln5.onrender.com) (configured in `render.yaml`; confirm the deployment is active before sharing).
-- **Video walkthrough:** _Add the video URL here when it is available._
+- **Live app (Render):** [Live LInk](https://prepkit-frontend-ik74.onrender.com)) 
+- **Video walkthrough:** [Live Link](https://drive.google.com/file/d/1cVTz6Xmn5q8fVchdm5t-OeMfDYf8A1oe/view?usp=sharing)
 
 ## Quick start
 
