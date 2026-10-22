@@ -99,7 +99,7 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
     try { value=await generateSection(); console.log(JSON.stringify({event:"generation_timing",jobId:input.jobId,section:name,operation:"section",elapsedMs:Math.round(performance.now()-startedAt),outcome:"success"})); }
     catch(error) {
       console.log(JSON.stringify({event:"generation_timing",jobId:input.jobId,section:name,operation:"section",elapsedMs:Math.round(performance.now()-startedAt),outcome:error instanceof ProviderQuotaWait?"quota_wait":isTransientGenerationError(error)?"transient_error":"fallback"}));
-      if(error instanceof ProviderQuotaWait||isTransientGenerationError(error)||error instanceof Error&&error.message==="CANCELLED")throw error;
+      if(isTransientGenerationError(error)||error instanceof Error&&error.message==="CANCELLED")throw error;
       console.warn(JSON.stringify({event:"generation_section_fallback",jobId:input.jobId,section:name,error:error instanceof Error?error.message.slice(0,1200):"unknown error"}));
       await setStage(name,"degraded","AI output was unusable; fallback content was used. Review this section before relying on it.");
       await pool.query("UPDATE generation_jobs SET checkpoint=checkpoint || $2::jsonb,heartbeat_at=now(),lease_until=now()+interval '90 seconds',updated_at=now() WHERE id=$1",[input.jobId,JSON.stringify({[key]:null,[fallbackKey]:true})]);
@@ -147,20 +147,28 @@ export async function runPipeline(input: PipelineInput, overrides: Partial<Pipel
     for(const chunk of chunks)await pool.query("INSERT INTO evidence_chunks(id,kit_id,source_id,ordinal,content,token_count) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO UPDATE SET content=EXCLUDED.content,token_count=EXCLUDED.token_count",[chunk.id,input.kitId,chunk.sourceId,chunk.ordinal,chunk.text,Math.ceil(chunk.text.length/4)]);
     await setStage("requirements", "running");
     let requirements = (await pool.query("SELECT id,text,kind,priority,evidence_quote,provenance FROM requirements WHERE kit_id=$1 AND archived=false AND NOT(provenance='inferred' AND evidence_quote='') ORDER BY id",[input.kitId])).rows.map((r:any)=>({...r,basis:r.provenance==="inferred"&&!r.evidence_quote?"role_inference":"job_description"})).filter((r:any)=>!isSeniorityOnlyRequirement(r.text,r.evidence_quote));
+    let requirementsFallback=false;
     if(!requirements.length){
-      requirements = keepRequirementsWithExactQuotes(await generate('First review the interview-experience reports for recurring skills and question patterns relevant to this role. Then extract only explicit requirements from the supplied job description. Return only a JSON array of objects with these required fields: "text" (string), "kind" (exactly "technical", "behavioural", or "domain"), "priority" (exactly "must" or "nice"), and "quote" (a short exact string copied verbatim from the job description). Interview reports may guide later practice but must never be turned into employer-stated requirements. Do not return a wrapper object or use alternate field names. Do not invent facts or requirements.', { role: input.role, jd: input.jd, interview_experience_to_review_first: interviewReview }, (v) => {
-        const rows = reqOut.parse(v);
-        const invalid = rows.flatMap((row, index) => row.quote.trim() && input.jd.includes(row.quote.trim()) ? [] : [{ code: z.ZodIssueCode.custom, path: [index, "quote"], message: "quote must be a non-empty exact substring of the supplied job description" }]);
-        if (invalid.length) throw new z.ZodError(invalid);
-        return rows;
-      },"requirements"), input.jd)
-        .map((r) => ({ id: id(), text: r.text, kind: r.kind, priority: r.priority, evidence_quote: r.quote, provenance: "researched" })).filter((r)=>!isSeniorityOnlyRequirement(r.text,r.evidence_quote));
-    if (!requirements.length && input.jd.trim().length > 0) requirements = requirementsFromDescription(input.jd);
+      try {
+        requirements = keepRequirementsWithExactQuotes(await generate('First review the interview-experience reports for recurring skills and question patterns relevant to this role. Then extract only explicit requirements from the supplied job description. Return only a JSON array of objects with these required fields: "text" (string), "kind" (exactly "technical", "behavioural", or "domain"), "priority" (exactly "must" or "nice"), and "quote" (a short exact string copied verbatim from the job description). Interview reports may guide later practice but must never be turned into employer-stated requirements. Do not return a wrapper object or use alternate field names. Do not invent facts or requirements.', { role: input.role, jd: input.jd, interview_experience_to_review_first: interviewReview }, (v) => {
+          const rows = reqOut.parse(v);
+          const invalid = rows.flatMap((row, index) => row.quote.trim() && input.jd.includes(row.quote.trim()) ? [] : [{ code: z.ZodIssueCode.custom, path: [index, "quote"], message: "quote must be a non-empty exact substring of the supplied job description" }]);
+          if (invalid.length) throw new z.ZodError(invalid);
+          return rows;
+        },"requirements"), input.jd)
+          .map((r) => ({ id: id(), text: r.text, kind: r.kind, priority: r.priority, evidence_quote: r.quote, provenance: "researched" })).filter((r)=>!isSeniorityOnlyRequirement(r.text,r.evidence_quote));
+      } catch(error) {
+        if(error instanceof Error&&error.message==="CANCELLED")throw error;
+        requirements=requirementsFromDescription(input.jd);
+        requirementsFallback=true;
+        console.warn(JSON.stringify({event:"generation_section_fallback",jobId:input.jobId,section:"requirements",reason:"provider_unavailable_or_invalid_output"}));
+      }
+      if (!requirements.length && input.jd.trim().length > 0) requirements = requirementsFromDescription(input.jd);
       await transaction(async (c) => { for (const r of requirements) await c.query("INSERT INTO requirements(id,kit_id,text,kind,priority,evidence_quote,provenance) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING", [r.id,input.kitId,r.text,r.kind,r.priority,r.evidence_quote,r.provenance]); });
     }
     requirements=requirements.flatMap((r:any)=>splitOptionalRequirement(r,input.kitId)).map((r:any)=>({...r,basis:r.basis??"job_description"}));
     for(const requirement of requirements)await pool.query("INSERT INTO requirements(id,kit_id,text,kind,priority,evidence_quote,provenance) VALUES($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO UPDATE SET text=EXCLUDED.text,kind=EXCLUDED.kind,priority=EXCLUDED.priority,evidence_quote=EXCLUDED.evidence_quote WHERE requirements.provenance<>'user_authored'",[requirement.id,input.kitId,requirement.text,requirement.kind,requirement.priority,requirement.evidence_quote??"",requirement.provenance??"researched"]);
-    await setStage("requirements", requirements.length ? "ready" : "degraded", requirements.length ? "Requirements are linked to explicit job-description evidence or marked as role-based inference." : "The job description is too thin to extract requirements. Add more role detail before relying on this kit.");
+    await setStage("requirements", requirements.length ? requirementsFallback ? "degraded" : "ready" : "degraded", requirementsFallback ? "AI providers were unavailable; requirements were extracted directly from exact job-description text." : requirements.length ? "Requirements are linked to explicit job-description evidence or marked as role-based inference." : "The job description is too thin to extract requirements. Add more role detail before relying on this kit.");
 
     const asEvidence=(selected:ReturnType<typeof retrieveEvidence>)=>selected.map((chunk)=>({id:chunk.id,url:chunk.url,title:chunk.title,source_type:chunk.sourceType,text:chunk.text}));
     const companyChunks=chunks.filter((chunk)=>chunk.sourceType==="company");
@@ -591,10 +599,12 @@ function roundForTopic(label:string,role:string,rounds:Array<{name:string}>){
   const family=roleFamilyFor(role)?.id;
   const find=(pattern:RegExp)=>rounds.find((round)=>pattern.test(round.name))?.name;
   if(family==="software-engineering"){
-    if(/data structures|algorithms|\bDSA\b/i.test(label))return find(/online assessment|coding|technical/i);
+    if(/data structures|algorithms|\bDSA\b|coding implementation/i.test(label))return find(/online assessment|assessment|coding/i)??find(/technical/i);
     if(/resume|behavior|behaviour|project/i.test(label))return find(/resume|behavior|behaviour|manager|experience/i);
-    if(/design|architecture|object.oriented|\bOOD\b|computer science|\bCS\b/i.test(label))return find(/system design|design|architecture/i)??find(/technical/i);
-    return find(/technical|coding|system design/i);
+    if(/core computer science|operating systems|database|networking/i.test(label))return find(/technical|core cs/i)??find(/system design|design/i);
+    if(/low.level design|object.oriented|\bOOD\b/i.test(label))return find(/system design|LLD|low.level design|design/i)??find(/technical/i);
+    if(/system design|architecture/i.test(label))return find(/system design|architecture|design/i)??find(/technical/i);
+    return find(/online assessment|assessment|technical|coding|system design/i);
   }
   if(family==="human-resources"){
     if(/experience|examples|resume|collaboration/i.test(label))return find(/experience|manager|behavior|behaviour/i);

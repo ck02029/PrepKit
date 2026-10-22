@@ -60,8 +60,8 @@ function conciseRequirementText(value: string) {
   const match = summaries.find(([pattern]) => pattern.test(text));
   if (match) return match[1];
   const firstSentence = text.split(/(?<=[.!?])\s+/)[0] ?? text;
-  if (firstSentence.length <= 105) return firstSentence.replace(/[.!?]+$/, "");
-  const shortened = firstSentence.slice(0, 102).replace(/\s+\S*$/, "");
+  if (firstSentence.length <= 78) return firstSentence.replace(/[.!?]+$/, "");
+  const shortened = firstSentence.slice(0, 75).replace(/\s+\S*$/, "");
   return `${shortened}…`;
 }
 
@@ -185,7 +185,7 @@ export function BuilderContent({ kitId }: { kitId: string }) {
         <div className="rounded border border-border bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">Target role</p>
           <p className="mt-3 text-sm leading-7">{overviewLines.join(" ")}</p>
-          <div className="mt-4 border-t border-border pt-4"><h3 className="text-sm font-semibold">Requirements</h3><p className="mt-1 text-xs text-muted">Key qualifications from the job description.</p>{data.role.requirements.length ? <ul className="mt-3 space-y-2">{data.role.requirements.map((requirement) => <li key={requirement.id} className="text-sm"><span className={`mr-2 rounded px-1.5 py-0.5 text-[11px] ${requirement.priority === "must" ? "bg-[#fce9e6] text-[#8a1f14]" : "bg-nice-bg text-nice-text"}`}>{requirement.priority === "must" ? "Required" : "Preferred"}</span><span title={requirement.text}>{conciseRequirementText(requirement.text)}</span>{requirement.evidence_quote && !sameRequirementText(requirement.evidence_quote, requirement.text) ? <details className="mt-1 text-xs text-muted"><summary className="cursor-pointer">View JD wording</summary><p className="mt-1">{requirement.evidence_quote}</p></details> : null}</li>)}</ul> : <p className="mt-3 text-sm text-muted">No explicit requirements were extracted. Add the job description to tailor this kit.</p>}</div>
+          <div className="mt-4 border-t border-border pt-4"><h3 className="text-sm font-semibold">Requirements</h3><p className="mt-1 text-xs text-muted">Key qualifications from the job description.</p>{data.role.requirements.length ? <ul className="mt-3 space-y-2">{data.role.requirements.map((requirement) => <li key={requirement.id} className="text-sm"><span className={`mr-2 rounded px-1.5 py-0.5 text-[11px] ${requirement.priority === "must" ? "bg-[#fce9e6] text-[#8a1f14]" : "bg-nice-bg text-nice-text"}`}>{requirement.priority === "must" ? "Required" : "Preferred"}</span>{" "}<span title={requirement.text}>{conciseRequirementText(requirement.text)}</span>{requirement.evidence_quote && !sameRequirementText(requirement.evidence_quote, requirement.text) ? <details className="mt-1 text-xs text-muted"><summary className="cursor-pointer">View JD wording</summary><p className="mt-1">{requirement.evidence_quote}</p></details> : null}</li>)}</ul> : <p className="mt-3 text-sm text-muted">No explicit requirements were extracted. Add the job description to tailor this kit.</p>}</div>
         </div>
         <div className="rounded border border-border bg-white p-5">
           <p className="text-xs font-semibold uppercase tracking-wide text-muted">About {formatCompany(data.source.company)}</p>

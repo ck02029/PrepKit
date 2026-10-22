@@ -406,7 +406,7 @@ export type InterviewRoleFamily={id:string;label:string;searchTerms:string;match
 /** Common role families and equivalent titles used to find comparable interview reports. */
 export const interviewRoleFamilies:InterviewRoleFamily[]=[
   {id:"forward-deployed",label:"forward deployed engineering",searchTerms:"forward deployed engineer FDE solutions engineer field engineer customer engineer implementation engineer",matches:[/forward.deployed/i,/(?:\bFDE\b)/i,/solutions engineer/i,/field engineer/i],technical:true},
-  {id:"software-engineering",label:"software engineering",searchTerms:"software engineer software developer SDE backend frontend full stack application engineer",matches:[/software engineer/i,/software developer/i,/\bSDE\b/i,/backend engineer/i,/back.end developer/i,/frontend engineer/i,/front.end developer/i,/full[ -]?stack/i,/application (?:software )?(?:engineer|developer)/i],technical:true},
+  {id:"software-engineering",label:"software engineering",searchTerms:"software engineer software development engineer software developer SDE backend frontend full stack application engineer",matches:[/software engineer/i,/software (?:development|dev) engineer/i,/software developer/i,/\bSDE\b/i,/backend engineer/i,/back.end developer/i,/frontend engineer/i,/front.end developer/i,/full[ -]?stack/i,/application (?:software )?(?:engineer|developer)/i],technical:true},
   {id:"data-engineering",label:"data engineering",searchTerms:"data engineer analytics engineer ETL pipeline engineer data platform",matches:[/data engineer/i,/analytics engineer/i,/ETL engineer/i,/data platform/i],technical:true},
   {id:"machine-learning",label:"machine learning engineering",searchTerms:"machine learning engineer ML engineer AI engineer applied scientist",matches:[/machine learning/i,/\bML engineer/i,/\bAI engineer/i,/applied scientist/i],technical:true},
   {id:"data-science",label:"data science",searchTerms:"data scientist data science research scientist statistical modeling",matches:[/data scientist/i,/data science/i,/research scientist/i],technical:true},
@@ -450,7 +450,7 @@ export function roleFamilyFor(role:string){return interviewRoleFamilies.find((fa
 
 export function roleLevelInterviewQuery(role:string,jobDescription=""){
   const value=role.toLowerCase();
-  const level=/intern/.test(value)?"intern internship":/fresher|new.?grad|graduate|entry.level|junior|\bsde\s*1\b|software engineer i\b/.test(value)?"entry level junior new graduate fresher SDE 1":/senior|staff|principal|lead|manager|director/.test(value)?"senior experienced": "";
+  const level=/intern/.test(value)?"intern internship":/fresher|new.?grad|graduate|entry.level|junior|\bsde\s*1\b|software (?:development|dev) engineer i\b|software engineer i\b/.test(value)?"entry level junior new graduate fresher SDE 1":/senior|staff|principal|lead|manager|director/.test(value)?"senior experienced": "";
   const family=roleFamilyFor(role);
   const searchFamily=family?.searchTerms??role.split(",")[0]!;
   const experienceClues=extractExperienceSearchClues(jobDescription);

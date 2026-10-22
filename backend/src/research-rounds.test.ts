@@ -1,6 +1,12 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { isRoundApplicableToCompany, matchesRole, roundsFromCandidateReports } from "./research.js";
+import { isRoundApplicableToCompany, matchesRole, roleFamilyFor, roleLevelInterviewQuery, roundsFromCandidateReports } from "./research.js";
+
+test("recognizes common Software Development Engineer title variants for role research", () => {
+  const role = "Software Dev Engineer I, Amazon University Talent Acquisition";
+  assert.equal(roleFamilyFor(role)?.id, "software-engineering");
+  assert.match(roleLevelInterviewQuery(role), /software development engineer/i);
+});
 
 test("candidate report fallback only emits stages explicitly present in report evidence", () => {
   const result = roundsFromCandidateReports([
