@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-export type ProviderName = "gemini" | "openai";
+export type ProviderName = "gemini" | "groq" | "openai";
 export type QuotaDecision = { retryAt: Date; reason: "per_day" | "insufficient_quota" | "rate_limit" };
 
 export function providerKeyId(key: string): string {

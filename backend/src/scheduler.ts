@@ -2,6 +2,7 @@ export type ScheduledQuestion = {
   id: string;
   practice_type?: "interview" | "coding" | "writing";
   difficulty?: 1 | 2 | 3;
+  round_name?: string | null;
   topic_ids?: string[];
   requirement_ids: string[];
 };
@@ -31,24 +32,25 @@ type ScheduleItem = {
   minutes: number;
   topicIds: string[];
   requirementIds: string[];
-  mustCount: number;
   difficulty: number;
+  roundOrder: number;
 };
 
-/** Build a deterministic, budget-bounded schedule. Items which cannot fit are
- * deliberately left out and reported so the UI can surface what needs attention. */
+/** Build a deterministic, budget-bounded, topic-prioritized schedule. Items which
+ * cannot fit are deliberately left out and reported to the UI. */
 export function buildSchedule(
   days: number,
   questions: ScheduledQuestion[],
   cards: ScheduledFlashcard[],
   dailyBudget: number,
-  requirements: ScheduleRequirement[],
+  _requirements: ScheduleRequirement[],
   topics: ScheduleTopic[],
+  roundSequence: string[] = [],
 ): SchedulePlan {
   if (!Number.isInteger(days) || days < 1) throw new RangeError("Schedule days must be a positive integer.");
   if (!Number.isInteger(dailyBudget) || dailyBudget < 1) throw new RangeError("The daily time budget must be a positive integer.");
 
-  const mustIds = new Set(requirements.filter((item) => item.priority === "must").map((item) => item.id));
+  const topicOrder = new Map(roundSequence.map((id, index) => [id, index]));
   const items: ScheduleItem[] = [
     ...questions.map((question) => ({
       id: question.id,
@@ -56,8 +58,8 @@ export function buildSchedule(
       minutes: question.practice_type === "coding" ? 35 : 15,
       topicIds: question.topic_ids ?? [],
       requirementIds: question.requirement_ids,
-      mustCount: question.requirement_ids.filter((id) => mustIds.has(id)).length,
       difficulty: question.difficulty ?? 1,
+      roundOrder: question.topic_ids?.length ? Math.min(...question.topic_ids.map((id) => topicOrder.get(id) ?? 100)) : 100,
     })),
     ...cards.map((card) => ({
       id: card.id,
@@ -65,14 +67,14 @@ export function buildSchedule(
       minutes: 5,
       topicIds: card.topic_ids ?? [],
       requirementIds: card.requirement_ids,
-      mustCount: card.requirement_ids.filter((id) => mustIds.has(id)).length,
       difficulty: 1,
+      roundOrder: card.topic_ids?.length ? Math.min(...card.topic_ids.map((id) => topicOrder.get(id) ?? 100)) : 100,
     })),
   ];
 
   const dayRows: ScheduleDay[] = Array.from({ length: days }, (_, index) => ({
     day: index + 1,
-    focus: "Review key role requirements and company notes",
+    focus: "Review interview topics and practice",
     question_ids: [],
     flashcard_ids: [],
     topic_ids: [],
@@ -88,9 +90,8 @@ export function buildSchedule(
   }
   if (duplicateIds.size) throw new Error(`Schedule items must have unique IDs: ${[...duplicateIds].join(", ")}`);
 
-  // Prioritize must-have coverage, then place each item on the least-loaded day
-  // that does not already cover its requirements. This spreads core practice.
-  items.sort((a, b) => b.mustCount - a.mustCount || b.difficulty - a.difficulty || b.minutes - a.minutes || a.id.localeCompare(b.id));
+  // Follow study-topic priority, then spread practice evenly across days.
+  items.sort((a, b) => a.roundOrder - b.roundOrder || b.difficulty - a.difficulty || b.minutes - a.minutes || a.id.localeCompare(b.id));
   for (const item of items) {
     if (item.minutes > dailyBudget) {
       warnings.push(`${item.type} ${item.id} needs ${item.minutes} minutes, above the ${dailyBudget}-minute daily budget, so it was not scheduled.`);
@@ -113,13 +114,15 @@ export function buildSchedule(
     day.minutes += item.minutes;
   }
 
+  if (items.length > 0 && dayRows.every((day) => day.question_ids.length === 0 && day.flashcard_ids.length === 0)) {
+    warnings.push("There is no scheduled practice because none of the available items fit the daily time budget.");
+  }
+
   const topicLabels = new Map(topics.map((topic) => [topic.id, topic.label]));
   const reviewTopicsByDay = new Map<number, string[]>();
-  const coveredRequirements = new Set<string>();
   for (const day of dayRows) {
     day.topic_ids = [...new Set(day.topic_ids)];
     day.requirement_ids = [...new Set(day.requirement_ids)];
-    day.requirement_ids.forEach((id) => coveredRequirements.add(id));
     if (day.day > 1) {
       const yesterdayTopics = new Set(dayRows[day.day - 2].topic_ids);
       const reviewCards = cards.filter((card) => (card.topic_ids ?? []).some((id) => yesterdayTopics.has(id)))
@@ -138,16 +141,12 @@ export function buildSchedule(
     }
     day.topic_ids = [...new Set(day.topic_ids)];
     day.requirement_ids = [...new Set(day.requirement_ids)];
-    day.requirement_ids.forEach((id) => coveredRequirements.add(id));
     const labels = day.topic_ids.map((id) => topicLabels.get(id)).filter((label): label is string => Boolean(label));
     const reviewLabels = reviewTopicsByDay.get(day.day);
-    if (reviewLabels?.length) day.focus = `Review yesterday: ${reviewLabels.slice(0, 2).join(" · ")}${labels.length ? ` · ${labels.slice(0, 2).join(" · ")}` : ""}`;
-    else if (labels.length) day.focus = labels.slice(0, 3).join(" · ");
-  }
-  for (const requirement of requirements) {
-    if (requirement.priority === "must" && !coveredRequirements.has(requirement.id)) {
-      warnings.push(`Must-have requirement “${requirement.text}” has no scheduled practice content.`);
-    }
+    const currentLabels = labels.filter((label) => !reviewLabels?.includes(label));
+    if (currentLabels.length && reviewLabels?.length) day.focus = `${currentLabels.slice(0, 2).join(" · ")} · Review: ${reviewLabels.slice(0, 2).join(" · ")}`;
+    else if (currentLabels.length) day.focus = currentLabels.slice(0, 3).join(" · ");
+    else if (reviewLabels?.length) day.focus = `Review: ${reviewLabels.slice(0, 2).join(" · ")}`;
   }
   return { days_available: days, days: dayRows, warnings };
 }

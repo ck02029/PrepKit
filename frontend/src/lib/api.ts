@@ -28,8 +28,8 @@ export async function retryKit(id: string): Promise<Kit> {
   return kit;
 }
 
-export function regenerateKitSection(id: string, section: "overview" | "topics" | "rounds" | "questions" | "flashcards" | "schedule", category?: "technical" | "behavioural" | "system-design" | "company-fit"): Promise<void> {
-  return backendRegenerateSection(id, section, category);
+export function regenerateKitSection(id: string, section: "overview" | "topics" | "rounds" | "questions" | "flashcards" | "schedule", category?: "technical" | "behavioural" | "system-design" | "company-fit", mode?: "append_fresh", sessionId?: string): Promise<void> {
+  return backendRegenerateSection(id, section, category, mode, sessionId);
 }
 
 export const fetchKit = backendFetchKit;

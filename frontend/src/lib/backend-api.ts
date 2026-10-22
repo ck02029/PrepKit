@@ -76,8 +76,8 @@ export async function backendRetryGeneration(id: string): Promise<void> {
   await backendRequest(`/api/kits/${encodeURIComponent(id)}/generation/retry`, { method: "POST" });
 }
 
-export async function backendRegenerateSection(id: string, section: "overview" | "topics" | "rounds" | "questions" | "flashcards" | "schedule", category?: "technical" | "behavioural" | "system-design" | "company-fit"): Promise<void> {
-  await backendRequest(`/api/kits/${encodeURIComponent(id)}/generation/sections/${section}/regenerate`, { method: "POST", ...(section === "questions" && category ? { body: JSON.stringify({ category }) } : {}) });
+export async function backendRegenerateSection(id: string, section: "overview" | "topics" | "rounds" | "questions" | "flashcards" | "schedule", category?: "technical" | "behavioural" | "system-design" | "company-fit", mode?: "append_fresh", sessionId?: string): Promise<void> {
+  await backendRequest(`/api/kits/${encodeURIComponent(id)}/generation/sections/${section}/regenerate`, { method: "POST", ...(section === "questions" && (category || mode || sessionId) ? { body: JSON.stringify({ category, mode, session_id: sessionId }) } : {}) });
 }
 
 export async function backendFetchScheduleProgress(id: string): Promise<{ day: number; status: "not_started" | "in_progress" | "completed" }[]> {

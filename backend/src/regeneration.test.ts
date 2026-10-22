@@ -1,6 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { mergeRegeneratedCategory, mergeRegeneratedItems } from "./regeneration.js";
+import { isNovelQuestion, mergeRegeneratedCategory, mergeRegeneratedItems } from "./regeneration.js";
+
+test("fresh question checks reject exact and close repeats but allow a different angle", () => {
+  const existing = ["How would you design a service that handles millions of API requests while remaining reliable?"];
+  assert.equal(isNovelQuestion("How would you design a service that handles millions of API requests while remaining reliable?", existing), false);
+  assert.equal(isNovelQuestion("Design a reliable service to handle millions of API requests.", existing), false);
+  assert.equal(isNovelQuestion("A database outage causes duplicate payments. How do you recover safely and prevent another incident?", existing), true);
+});
 
 type Item = { id: string; prompt: string; origin: "edited" | "generated"; progress?: { answer: string; rating: number } };
 

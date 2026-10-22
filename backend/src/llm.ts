@@ -1,13 +1,24 @@
 import { createHash } from "node:crypto";
-import { config, geminiApiKeys, openaiApiKeys } from "./config.js";
+import { config, freeOnly, geminiApiKeys, groqApiKeys, openaiApiKeys } from "./config.js";
 import { pool } from "./db.js";
 import { TransientGenerationError } from "./retry.js";
 import { buildGenerationPrompt } from "./llm-prompt.js";
-import { buildOutputRepairTask, includePreviousResponse, summarizeOutputValidation } from "./llm-output.js";
 import { ZodError } from "zod";
 import { nextMidnight, providerKeyId, quotaDecision, type ProviderName } from "./provider-quota.js";
 
 type ProviderSpec = { name: ProviderName; key: string; keyId: string; model: string };
+export type LlmTimingContext = { jobId?: string; section?: string; operation?: string };
+const SECTION_OUTPUT_TOKEN_LIMITS: Record<string, number> = {
+  overview: 1200,
+  requirements: 3500,
+  topics: 2800,
+  rounds: 1800,
+  questions: 4200,
+  flashcards: 2400,
+};
+function outputTokenBudget(section?: string) {
+  return Math.min(config.LLM_MAX_OUTPUT_TOKENS, SECTION_OUTPUT_TOKEN_LIMITS[section ?? ""] ?? 3000);
+}
 export class ProviderQuotaWait extends Error {
   constructor(readonly retryAt: Date, readonly providers: ProviderName[]) {
     super("All configured AI provider keys are temporarily rate limited.");
@@ -22,7 +33,8 @@ const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 function configuredProviders(): ProviderSpec[] {
   return [
     ...geminiApiKeys.map((key) => ({ name: "gemini" as const, key, keyId: providerKeyId(key), model: config.LLM_MODEL })),
-    ...openaiApiKeys.map((key) => ({ name: "openai" as const, key, keyId: providerKeyId(key), model: config.OPENAI_MODEL })),
+    ...groqApiKeys.map((key) => ({ name: "groq" as const, key, keyId: providerKeyId(key), model: config.GROQ_MODEL })),
+    ...(!freeOnly ? openaiApiKeys.map((key) => ({ name: "openai" as const, key, keyId: providerKeyId(key), model: config.OPENAI_MODEL })) : []),
   ];
 }
 
@@ -74,11 +86,19 @@ async function listKeysLeastUsed(specs: ProviderSpec[]) {
   return [...specs].sort((a, b) => (rank.get(a.keyId) ?? 0) - (rank.get(b.keyId) ?? 0));
 }
 
-async function callWithKey<T>(spec: ProviderSpec, action: (spec: ProviderSpec) => Promise<T>): Promise<T> {
+async function callWithKey<T>(spec: ProviderSpec, action: (spec: ProviderSpec) => Promise<T>, context: LlmTimingContext = {}): Promise<T> {
   const reservation = await reserveKey(spec);
   if ("blockedUntil" in reservation) throw new ProviderRequestError("Provider key is cooling down.", reservation.blockedUntil, reservation.reason);
   if (reservation.waitMs > 0) await pause(reservation.waitMs);
-  return action(spec);
+  const startedAt = performance.now();
+  try {
+    const result = await action(spec);
+    console.log(JSON.stringify({event:"ai_provider_timing",jobId:context.jobId,section:context.section,operation:context.operation??"structured_generation",provider:spec.name,model:spec.model,keyId:spec.keyId,pacingWaitMs:reservation.waitMs,requestMs:Math.round(performance.now()-startedAt),outcome:"success"}));
+    return result;
+  } catch (error) {
+    console.log(JSON.stringify({event:"ai_provider_timing",jobId:context.jobId,section:context.section,operation:context.operation??"structured_generation",provider:spec.name,model:spec.model,keyId:spec.keyId,pacingWaitMs:reservation.waitMs,requestMs:Math.round(performance.now()-startedAt),outcome:error instanceof ProviderRequestError?"rate_limited":"error"}));
+    throw error;
+  }
 }
 
 async function everyConfiguredKeyBlocked(specs: ProviderSpec[]) {
@@ -91,31 +111,31 @@ async function everyConfiguredKeyBlocked(specs: ProviderSpec[]) {
   return { retryAt: new Date(Math.min(...blocked.map(({ state }: any) => new Date(state.blocked_until).getTime()))), providers: [...new Set(blocked.map(({ spec }) => spec.name))] as ProviderName[] };
 }
 
-export async function generateJson<T>(task: string, input: unknown, validate: (value: unknown) => T): Promise<T> {
+export async function generateJson<T>(task: string, input: unknown, validate: (value: unknown) => T, timing: LlmTimingContext = {}): Promise<T> {
   const providers = configuredProviders();
-  if (!providers.length) throw new Error("AI generation is not configured. Add GEMINI_API_KEY(S) or OPENAI_API_KEY(S) in the backend environment.");
+  if (!providers.length) throw new Error("AI generation is not configured. Add GEMINI_API_KEY(S), GROQ_API_KEY(S), or OPENAI_API_KEY(S) in the backend environment.");
   const models = [...new Set(providers.map((p) => `${p.name}:${p.model}`))];
-  const cacheKey = createHash("sha256").update(JSON.stringify({ task, input, models, promptVersion: 5 })).digest("hex");
+  const cacheKey = createHash("sha256").update(JSON.stringify({ task, input, models, promptVersion: 6 })).digest("hex");
+  const cacheStartedAt=performance.now();
   const cached = await pool.query("SELECT result FROM ai_generation_cache WHERE cache_key=$1 AND expires_at>now()", [cacheKey]);
+  console.log(JSON.stringify({event:"ai_generation_cache_timing",jobId:timing.jobId,section:timing.section,elapsedMs:Math.round(performance.now()-cacheStartedAt),outcome:cached.rowCount?"hit":"miss"}));
   if (cached.rowCount) {
     try { return validate(cached.rows[0].result); } catch { await pool.query("DELETE FROM ai_generation_cache WHERE cache_key=$1", [cacheKey]); }
   }
 
   const failures: string[] = [];
   const transientErrors: TransientGenerationError[] = [];
-  for (const providerName of ["gemini", "openai"] as const) {
+  for (const providerName of ["gemini", "groq", "openai"] as const) {
     const group = await listKeysLeastUsed(providers.filter((item) => item.name === providerName));
     for (const spec of group) {
-      let repairHint = "";
-      let previousResponse: unknown;
-      for (let repair = 0; repair < 2; repair++) {
+      let stopProvider = false;
+      for (let repair = 0; repair < 1; repair++) {
         let responseText = "";
         let parsed: unknown;
         try {
-          const attemptTask = repairHint ? buildOutputRepairTask(task, repairHint) : task;
-          const attemptInput = repairHint ? includePreviousResponse(input, previousResponse) : input;
-          const prompt = buildGenerationPrompt(attemptTask, attemptInput);
-          responseText = await callWithKey(spec, (key) => providerName === "gemini" ? callGemini(key, prompt) : callOpenAI(key, prompt));
+          const prompt = buildGenerationPrompt(task, input);
+          const maxOutputTokens = outputTokenBudget(timing.section);
+          responseText = await callWithKey(spec, (key) => providerName === "gemini" ? callGemini(key, prompt, maxOutputTokens) : callChatCompletions(key, prompt, providerName, maxOutputTokens), timing);
           parsed = JSON.parse(responseText);
           const result = validate(parsed);
           await pool.query("INSERT INTO ai_generation_cache(cache_key,result,expires_at) VALUES($1,$2,now()+interval '30 days') ON CONFLICT(cache_key) DO UPDATE SET result=EXCLUDED.result,expires_at=EXCLUDED.expires_at", [cacheKey, JSON.stringify(result)]);
@@ -126,33 +146,41 @@ export async function generateJson<T>(task: string, input: unknown, validate: (v
             failures.push(`${spec.name}:${spec.keyId}: rate limited`);
             break;
           }
-          if (error instanceof TransientGenerationError) { transientErrors.push(error); failures.push(`${spec.name}:${spec.keyId}: temporarily unavailable`); break; }
-          if (repair === 0 && (error instanceof SyntaxError || isValidationError(error))) {
-            repairHint = error instanceof SyntaxError ? "The previous response was invalid JSON. Return a complete valid JSON value." : summarizeOutputValidation(error);
-            previousResponse = error instanceof SyntaxError ? responseText.slice(0, 12000) : parsed;
-            continue;
+          if (error instanceof TransientGenerationError) { transientErrors.push(error); failures.push(`${spec.name}:${spec.keyId}: temporarily unavailable`); stopProvider = true; break; }
+          if (error instanceof SyntaxError || isValidationError(error)) {
+            failures.push(`${spec.name}:${spec.keyId}: invalid structured output`);
+            stopProvider = true;
+            break;
           }
           failures.push(`${spec.name}:${spec.keyId}: ${error instanceof Error ? error.message : "request failed"}`);
+          stopProvider = true;
           break;
         }
       }
+      if (stopProvider) break;
     }
+    // One failed provider gets one alternate provider. If both are timing out,
+    // stop this section quickly instead of spending a minute on every stage.
+    if (transientErrors.length >= 2) break;
   }
   const allBlocked = await everyConfiguredKeyBlocked(providers);
   if (allBlocked) throw new ProviderQuotaWait(allBlocked.retryAt, allBlocked.providers);
-  if (transientErrors.length) throw new TransientGenerationError(`AI providers are temporarily unavailable (${failures.join("; ")}).`, Math.max(...transientErrors.map((error) => error.retryAfterMs ?? 0)) || undefined);
+  // Once each usable provider has been attempted, let the pipeline use its
+  // section fallback instead of requeuing the entire kit. Genuine quota waits
+  // are handled above when every configured key is blocked.
+  if (transientErrors.length) throw new Error(`AI providers were temporarily unavailable (${failures.join("; ")}).`);
   throw new Error(failures.length ? `AI providers could not complete this stage (${failures.join("; ")}).` : "AI providers could not complete this stage.");
 }
 
-export async function requestGeminiGrounded(prompt: string, explicitKey?: string): Promise<any | null> {
+export async function requestGeminiGrounded(prompt: string, explicitKey?: string, timing: LlmTimingContext = {}): Promise<any | null> {
   if (explicitKey !== undefined) return requestGeminiWithKey({ name: "gemini", key: explicitKey, keyId: providerKeyId(explicitKey), model: config.LLM_MODEL }, prompt);
   const specs = await listKeysLeastUsed(configuredProviders().filter((item) => item.name === "gemini"));
   const failures: string[] = [];
   for (const spec of specs) {
-    try { return await callWithKey(spec, (key) => requestGeminiWithKey(key, prompt)); }
+    try { return await callWithKey(spec, (key) => requestGeminiWithKey(key, prompt), timing); }
     catch (error) {
       if (error instanceof ProviderRequestError) { await blockKey(spec, error.retryAt, error.reason); failures.push(`${spec.keyId}: rate limited`); continue; }
-      if (error instanceof TransientGenerationError) { failures.push(`${spec.keyId}: temporarily unavailable`); continue; }
+      if (error instanceof TransientGenerationError) { failures.push(`${spec.keyId}: temporarily unavailable`); break; }
       throw error;
     }
   }
@@ -164,7 +192,7 @@ async function requestGeminiWithKey(spec: ProviderSpec, prompt: string): Promise
   const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(spec.model)}:generateContent`, {
     method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": spec.key },
     body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], tools: [{ google_search: {} }], generationConfig: { responseMimeType: "application/json", temperature: 0.1, maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS } }),
-    signal: AbortSignal.timeout(20000),
+    signal: AbortSignal.timeout(12000),
   }).catch(() => { throw new TransientGenerationError("Gemini research request failed temporarily."); });
   const body = await response.json().catch(() => ({})) as any;
   if (response.status === 429) {
@@ -176,10 +204,10 @@ async function requestGeminiWithKey(spec: ProviderSpec, prompt: string): Promise
   return body;
 }
 
-async function callGemini(provider: ProviderSpec, prompt: string): Promise<string> {
+async function callGemini(provider: ProviderSpec, prompt: string, maxOutputTokens: number): Promise<string> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(provider.model)}:generateContent`;
   let response: Response;
-  try { response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": provider.key }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.25, maxOutputTokens: config.LLM_MAX_OUTPUT_TOKENS } }), signal: AbortSignal.timeout(45000) }); }
+  try { response = await fetch(url, { method: "POST", headers: { "content-type": "application/json", "x-goog-api-key": provider.key }, body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { responseMimeType: "application/json", temperature: 0.25, maxOutputTokens } }), signal: AbortSignal.timeout(20000) }); }
   catch { throw new TransientGenerationError("Gemini request failed temporarily."); }
   const body = await response.json().catch(() => ({})) as any;
   if (response.status === 429) { const decision = quotaDecision("gemini", response.headers, body); throw new ProviderRequestError("Gemini quota reached", decision.retryAt, decision.reason); }
@@ -193,15 +221,16 @@ async function callGemini(provider: ProviderSpec, prompt: string): Promise<strin
 
 function isValidationError(error: unknown): error is ZodError { return error instanceof ZodError; }
 
-async function callOpenAI(provider: ProviderSpec, prompt: string): Promise<string> {
+async function callChatCompletions(provider: ProviderSpec, prompt: string, providerName: "groq" | "openai", maxOutputTokens: number): Promise<string> {
+  const endpoint = providerName === "groq" ? "https://api.groq.com/openai/v1/chat/completions" : "https://api.openai.com/v1/chat/completions";
   let response: Response;
-  try { response = await fetch("https://api.openai.com/v1/chat/completions", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${provider.key}` }, body: JSON.stringify({ model: provider.model, messages: [{ role: "user", content: prompt }], response_format: { type: "json_object" }, max_tokens: config.LLM_MAX_OUTPUT_TOKENS, temperature: 0.25 }), signal: AbortSignal.timeout(45000) }); }
-  catch { throw new TransientGenerationError("OpenAI request failed temporarily."); }
+  try { response = await fetch(endpoint, { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${provider.key}` }, body: JSON.stringify({ model: provider.model, messages: [{ role: "user", content: prompt }], response_format: { type: "json_object" }, max_tokens: maxOutputTokens, temperature: 0.25 }), signal: AbortSignal.timeout(20000) }); }
+  catch { throw new TransientGenerationError(`${providerName === "groq" ? "Groq" : "OpenAI"} request failed temporarily.`); }
   const body = await response.json().catch(() => ({})) as any;
-  if (response.status === 429) { const decision = quotaDecision("openai", response.headers, body); throw new ProviderRequestError("OpenAI request rate limited", decision.retryAt, decision.reason); }
-  if (response.status === 408 || response.status === 425 || response.status >= 500) throw new TransientGenerationError(`OpenAI returned temporary HTTP ${response.status}.`, 2_000);
-  if (!response.ok) throw new Error(`OpenAI returned HTTP ${response.status}: ${body.error?.message ?? "provider request failed"}`);
+  if (response.status === 429) { const decision = quotaDecision(providerName, response.headers, body); throw new ProviderRequestError(`${providerName === "groq" ? "Groq" : "OpenAI"} request rate limited`, decision.retryAt, decision.reason); }
+  if (response.status === 408 || response.status === 425 || response.status >= 500) throw new TransientGenerationError(`${providerName === "groq" ? "Groq" : "OpenAI"} returned temporary HTTP ${response.status}.`, 2_000);
+  if (!response.ok) throw new Error(`${providerName === "groq" ? "Groq" : "OpenAI"} returned HTTP ${response.status}: ${body.error?.message ?? "provider request failed"}`);
   const text = body.choices?.[0]?.message?.content;
-  if (typeof text !== "string" || !text) throw new Error("OpenAI returned an empty response.");
+  if (typeof text !== "string" || !text) throw new Error(`${providerName === "groq" ? "Groq" : "OpenAI"} returned an empty response.`);
   return text;
 }

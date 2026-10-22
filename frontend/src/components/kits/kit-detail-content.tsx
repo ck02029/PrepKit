@@ -25,6 +25,6 @@ export function KitDetailContent({ kitId, generating = false }: KitDetailContent
   }
   if (kitQuery.isError) return <ErrorState onRetry={() => void kitQuery.refetch()} />;
   if (!kitQuery.data) return <EmptyState title="Kit not found" description="This kit may have been removed or the link is wrong." action={<LinkButton href="/kits" variant="secondary">Back to kits</LinkButton>} />;
-  if (shouldTrackGeneration && generation.data && (generation.data.status !== "ready" || generationViewState(generation.data, false) === "warning")) return <ProgressView kitId={kitId} status={generation.data} />;
+  if (shouldTrackGeneration && generation.data && generation.data.status !== "ready" && generation.data.status !== "needs_review") return <ProgressView kitId={kitId} status={generation.data} />;
   return <BuilderContent kitId={kitId} />;
 }

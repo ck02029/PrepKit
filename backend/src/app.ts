@@ -47,7 +47,28 @@ app.get("/api/kits/:id/generation",asyncRoute(async(req,res)=>{const q=await own
 app.post("/api/kits/:id/generation/sections/:section/regenerate",asyncRoute(async(req,res)=>{
   const kit=await ownedKit(req.params.id,req.userId!);
   const section=z.enum(["overview","topics","rounds","questions","flashcards","schedule"]).parse(req.params.section);
-  const questionCategory=section==="questions"?z.object({category:z.enum(["technical","behavioural","system-design","company-fit"]).optional()}).parse(req.body??{}).category:undefined;
+  const regenerationBody=section==="questions"?z.object({category:z.enum(["technical","behavioural","system-design","company-fit"]).optional(),mode:z.enum(["append_fresh"]).optional(),session_id:z.string().min(1).optional()}).parse(req.body??{}):{};
+  const questionCategory="category" in regenerationBody?regenerationBody.category:undefined;
+  const appendFreshQuestions="mode" in regenerationBody&&regenerationBody.mode==="append_fresh";
+  if(questionCategory&&appendFreshQuestions)throw new HttpError(400,"INVALID_INPUT","Choose either category regeneration or fresh question generation.");
+  const sessionId="session_id" in regenerationBody?regenerationBody.session_id:undefined;
+  if(sessionId&&!appendFreshQuestions)throw new HttpError(400,"INVALID_INPUT","A session can only be supplied when generating fresh questions.");
+  let freshQuestionScope:{categories:Array<"technical"|"behavioural"|"system-design"|"company-fit">;roundNames:string[];topicIds:string[]}|undefined;
+  if(sessionId){
+    const session=await pool.query("SELECT id,round_name,topic_id FROM practice_sessions WHERE id=$1 AND kit_id=$2 AND user_id=$3",[sessionId,kit.id,req.userId]);
+    if(!session.rowCount)throw new HttpError(404,"SESSION_NOT_FOUND","Practice session was not found.");
+    const sessionItems=await pool.query("SELECT item_id FROM practice_session_items WHERE session_id=$1 AND item_type='question' ORDER BY position",[sessionId]);
+    const allQuestions=(kit.data?.questions??[]) as Array<{id:string;category:"technical"|"behavioural"|"system-design"|"company-fit";round_name?:string|null;topic_ids?:string[]}>;
+    const itemIds=new Set(sessionItems.rows.map((item:any)=>item.item_id));
+    const sessionRow=session.rows[0];
+    const sessionTopics=sessionRow.topic_id?[String(sessionRow.topic_id)]:[];
+    const scopedQuestions=allQuestions.filter((question)=>itemIds.has(question.id)||(sessionTopics.length&&question.topic_ids?.some((topicId)=>sessionTopics.includes(topicId))));
+    freshQuestionScope={
+      categories:[...new Set(scopedQuestions.map((question)=>question.category))],
+      roundNames:[...new Set([sessionRow.round_name,...scopedQuestions.map((question)=>question.round_name)].filter((name):name is string=>typeof name==="string"&&Boolean(name.trim())))],
+      topicIds:[...new Set([...sessionTopics,...scopedQuestions.flatMap((question)=>question.topic_ids??[])])],
+    };
+  }
   await enforceBudget(`regen:${req.userId}`,config.REGENERATIONS_PER_HOUR,60,"You reached the hourly regeneration limit. Try again later.");
   const checkpointKeys:Record<typeof section,string[]>={overview:["overview"],topics:["topicRows","coverageRun","cardsOut"],rounds:["roundRows","coverageRun"],questions:["coverageRun"],flashcards:["cardsOut"],schedule:[]};
   const downstream:Record<typeof section,string[]>={overview:["overview"],topics:["topics","questions","flashcards","schedule"],rounds:["rounds","questions","schedule"],questions:["questions","schedule"],flashcards:["flashcards","schedule"],schedule:["schedule"]};
@@ -56,8 +77,8 @@ app.post("/api/kits/:id/generation/sections/:section/regenerate",asyncRoute(asyn
     if(!job.rowCount)throw new HttpError(404,"JOB_NOT_FOUND","Generation job was not found.");
     if(job.rows[0].status==="running"||job.rows[0].status==="queued")throw new HttpError(409,"GENERATION_BUSY","Wait for the current generation job before regenerating a section.");
     const nextRevision=id();
-    const regenerationFlags=questionCategory?{regenerateCategory:questionCategory}:section==="schedule"?{regenerateSchedule:true}:{};
-    await client.query("UPDATE generation_jobs SET status='queued',stage=$2,checkpoint=((checkpoint - $3::text[]) - 'regenerateCategory' - 'regenerateSchedule') || jsonb_build_object('_generation_revision',$4::text),input_snapshot=(input_snapshot - 'regenerateCategory' - 'regenerateSchedule') || $5::jsonb,error=NULL,attempts=0,available_at=now(),lease_until=NULL,cancel_requested=false,updated_at=now() WHERE id=$1",[kit.job_id,`regenerate_${section}`,checkpointKeys[section],nextRevision,JSON.stringify(regenerationFlags)]);
+    const regenerationFlags=questionCategory?{regenerateCategory:questionCategory}:appendFreshQuestions?{appendFreshQuestions:true,...(freshQuestionScope?{freshQuestionScope}:{})}:section==="schedule"?{regenerateSchedule:true}:{};
+    await client.query("UPDATE generation_jobs SET status='queued',stage=$2,checkpoint=((checkpoint - $3::text[]) - 'regenerateCategory' - 'regenerateSchedule') || jsonb_build_object('_generation_revision',$4::text),input_snapshot=(input_snapshot - 'regenerateCategory' - 'regenerateSchedule' - 'appendFreshQuestions' - 'freshQuestionScope') || $5::jsonb,error=NULL,attempts=0,available_at=now(),lease_until=NULL,cancel_requested=false,updated_at=now() WHERE id=$1",[kit.job_id,`regenerate_${section}`,checkpointKeys[section],nextRevision,JSON.stringify(regenerationFlags)]);
     await client.query("UPDATE generation_sections SET status='pending',detail='Section regeneration queued. Saved edits will be preserved.',updated_at=now() WHERE kit_id=$1 AND name=ANY($2::text[])",[kit.id,downstream[section]]);
     await client.query("UPDATE kits SET status='generating',updated_at=now() WHERE id=$1",[kit.id]);
     return {jobId:kit.job_id,section};
@@ -65,7 +86,16 @@ app.post("/api/kits/:id/generation/sections/:section/regenerate",asyncRoute(asyn
   res.status(202).json(result);
 }));
 app.post("/api/kits/:id/generation/cancel",asyncRoute(async(req,res)=>{const q=await ownedKit(req.params.id,req.userId!); const cancelled=await pool.query("UPDATE generation_jobs SET cancel_requested=true,status=CASE WHEN status='queued' THEN 'cancelled' ELSE status END,stage=CASE WHEN status='queued' THEN 'cancelled' ELSE stage END,lease_until=CASE WHEN status='queued' THEN NULL ELSE lease_until END WHERE id=$1 AND status IN ('queued','running') RETURNING status",[q.job_id]); if(cancelled.rows[0]?.status==="cancelled"){await pool.query("UPDATE generation_sections SET status='skipped',detail='Cancelled by the user.' WHERE kit_id=$1 AND status IN ('pending','running')",[q.id]);await pool.query("UPDATE kits SET status='failed',updated_at=now() WHERE id=$1",[q.id]);} res.json({ok:true});}));
-app.post("/api/kits/:id/generation/retry",asyncRoute(async(req,res)=>{const q=await ownedKit(req.params.id,req.userId!);await enforceBudget(`retry:${req.userId}`,config.REGENERATIONS_PER_HOUR,60,"You reached the hourly retry limit. Try again later."); await pool.query("UPDATE generation_jobs SET status='queued',cancel_requested=false,error=NULL,lease_until=NULL WHERE id=$1 AND status='failed'",[q.job_id]); await pool.query("UPDATE kits SET status='generating' WHERE id=$1",[q.id]); res.status(202).json({jobId:q.job_id});}));
+app.post("/api/kits/:id/generation/retry",asyncRoute(async(req,res)=>{
+  const q=await ownedKit(req.params.id,req.userId!);
+  await enforceBudget(`retry:${req.userId}`,config.REGENERATIONS_PER_HOUR,60,"You reached the hourly retry limit. Try again later.");
+  await transaction(async(client)=>{
+    await client.query("UPDATE generation_jobs SET status='queued',stage='research',attempts=0,available_at=now(),cancel_requested=false,error=NULL,lease_until=NULL,updated_at=now() WHERE id=$1 AND status='failed'",[q.job_id]);
+    await client.query("UPDATE generation_sections SET status='pending',detail='',updated_at=now() WHERE kit_id=$1 AND status IN ('running','failed')",[q.id]);
+    await client.query("UPDATE kits SET status='generating',updated_at=now() WHERE id=$1",[q.id]);
+  });
+  res.status(202).json({jobId:q.job_id});
+}));
 
 app.post("/api/kits/:id/practice/sessions",asyncRoute(async(req,res)=>{
   const q=await ownedKit(req.params.id,req.userId!);

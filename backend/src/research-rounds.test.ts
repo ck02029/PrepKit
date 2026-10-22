@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { roundsFromCandidateReports } from "./research.js";
+import { isRoundApplicableToCompany, matchesRole, roundsFromCandidateReports } from "./research.js";
 
 test("candidate report fallback only emits stages explicitly present in report evidence", () => {
   const result = roundsFromCandidateReports([
@@ -10,8 +10,8 @@ test("candidate report fallback only emits stages explicitly present in report e
   assert.deepEqual(result.rounds.map((round) => round.name), [
     "Online assessment (OA)",
     "DSA and coding interview",
-    "Leadership Principles and behavioral",
-    "Hiring manager or Bar Raiser discussion",
+    "Leadership Principles interview",
+    "Hiring manager discussion",
   ]);
   assert.ok(result.rounds.every((round) => round.sources[0] === "https://reports.example/amazon-sde"));
   assert.match(result.summary, /anecdotal examples/i);
@@ -25,4 +25,22 @@ test("candidate report fallback leaves unsupported round types out", () => {
 
   assert.deepEqual(result.rounds.map((round) => round.name), ["DSA and coding interview"]);
   assert.ok(!result.rounds.some((round) => /design|manager|behavioral/i.test(round.name)));
+});
+
+test("Amazon-specific interview formats are not attributed to Netflix", () => {
+  const result = roundsFromCandidateReports([
+    { title: "Netflix interview experience", url: "https://reports.example/netflix", text: "Behavioral questions, Amazon Leadership Principles, and a Bar Raiser discussion.", date: "", points: 0, scope: "company_specific" },
+  ], "Netflix");
+
+  assert.deepEqual(result.rounds.map((round) => round.name), ["Behavioral interview"]);
+  assert.equal(isRoundApplicableToCompany({ name: "Bar Raiser discussion", description: "Amazon-specific interview stage." }, "Netflix"), false);
+  assert.equal(isRoundApplicableToCompany({ name: "Leadership Principles interview", description: "Questions about Amazon Leadership Principles." }, "Netflix"), false);
+  assert.equal(isRoundApplicableToCompany({ name: "Leadership Principles interview", description: "Questions about Amazon Leadership Principles." }, "Amazon"), true);
+});
+
+test("role search requires the actual role family, not one shared generic word", () => {
+  const role = "Technical Operations Manager, Post Services - India Mumbai, India";
+  assert.equal(matchesRole({ title: "Netflix Interview Questions", text: "A guide for operations roles, technical screens, and managers.", url: "https://example.com/netflix" }, role), false);
+  assert.equal(matchesRole({ title: "Technical Operations Manager interview experience", text: "Candidate report for Netflix Post Services.", url: "https://example.com/report" }, role), true);
+  assert.equal(matchesRole({ title: "Data Analyst interview experience", text: "SQL and reporting interview.", url: "https://example.com/report" }, "Senior Data Analyst"), true);
 });
