@@ -70,8 +70,8 @@ app.post("/api/kits/:id/generation/sections/:section/regenerate",asyncRoute(asyn
     };
   }
   await enforceBudget(`regen:${req.userId}`,config.REGENERATIONS_PER_HOUR,60,"You reached the hourly regeneration limit. Try again later.");
-  const checkpointKeys:Record<typeof section,string[]>={overview:["overview"],topics:["topicRows","coverageRun","cardsOut"],rounds:["roundRows","coverageRun"],questions:["coverageRun"],flashcards:["cardsOut"],schedule:[]};
-  const downstream:Record<typeof section,string[]>={overview:["overview"],topics:["topics","questions","flashcards","schedule"],rounds:["rounds","questions","schedule"],questions:["questions","schedule"],flashcards:["flashcards","schedule"],schedule:["schedule"]};
+  const checkpointKeys:Record<typeof section,string[]>={overview:["overview"],topics:["topicRows","roundRows","coverageRun","cardsOut"],rounds:["roundRows","topicRows","coverageRun","cardsOut"],questions:["coverageRun"],flashcards:["cardsOut"],schedule:[]};
+  const downstream:Record<typeof section,string[]>={overview:["overview"],topics:["topics","rounds","questions","flashcards","schedule"],rounds:["rounds","topics","questions","flashcards","schedule"],questions:["questions","schedule"],flashcards:["flashcards","schedule"],schedule:["schedule"]};
   const result=await transaction(async(client)=>{
     const job=await client.query("SELECT id,status FROM generation_jobs WHERE id=$1 AND kit_id=$2 FOR UPDATE",[kit.job_id,kit.id]);
     if(!job.rowCount)throw new HttpError(404,"JOB_NOT_FOUND","Generation job was not found.");
